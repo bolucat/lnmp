@@ -1,0 +1,25 @@
+# LNMP-managed CentOS Stream 8 archive; not CentOS Linux 8 packages.
+[base]
+name=CentOS Stream 8 - BaseOS archive
+baseurl=https://mirrors.aliyun.com/centos-vault/8-stream/BaseOS/$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[extras]
+name=CentOS Stream 8 - Extras archive
+baseurl=https://mirrors.aliyun.com/centos-vault/8-stream/extras/$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[PowerTools]
+name=CentOS Stream 8 - PowerTools archive
+baseurl=https://mirrors.aliyun.com/centos-vault/8-stream/PowerTools/$basearch/os/
+enabled=0
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial
+
+[AppStream]
+name=CentOS Stream 8 - AppStream archive
+baseurl=https://mirrors.aliyun.com/centos-vault/8-stream/AppStream/$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-centosofficial

@@ -21,68 +21,76 @@ Start_Upgrade_PHP()
     echo "Current PHP Version:${Cur_PHP_Version}"
     echo "You can get version number from http://www.php.net/"
     read -p "Please enter a PHP Version you want: " php_version
-    if [ "${php_version}" = "" ]; then
-        echo "Error: You must enter a corrent php version!!"
-        exit 1
+    if [[ ! "${php_version}" =~ ^(5\.[2-6]|7\.[0-4]|8\.[0-5])\.[0-9]+$ ]]; then
+        Echo_Red "Unsupported or invalid PHP version: ${php_version}."
+        return 1
     fi
     Press_Start
-    cd ${cur_dir}/src
-    if [ -s php-${php_version}.tar.bz2 ]; then
-        echo "php-${php_version}.tar.bz2 [found]"
-    else
-        echo "Notice: php-$php_version.tar.bz2 not found!!!download now..."
-        Get_Country
-        if [ "${country}" = "CN" ]; then
-            Download_Files http://php.vpszt.com/php-${php_version}.tar.bz2 php-${php_version}.tar.bz2
-            if [ $? -ne 0 ]; then
-                Download_Files https://www.php.net/distributions/php-${php_version}.tar.bz2 php-${php_version}.tar.bz2
-            fi
-        else
-            Download_Files https://www.php.net/distributions/php-${php_version}.tar.bz2 php-${php_version}.tar.bz2
-            if [ $? -ne 0 ]; then
-                Download_Files http://php.vpszt.com/php-${php_version}.tar.bz2 php-${php_version}.tar.bz2
-            fi
-        fi
-        if [ $? -eq 0 ]; then
-            echo "Download php-${php_version}.tar.bz2 successfully!"
-        else
-            Download_Files http://museum.php.net/php5/php-${php_version}.tar.bz2 php-${php_version}.tar.bz2
-            if [ $? -eq 0 ]; then
-                echo "Download php-${php_version}.tar.bz2 successfully!"
-            else
-                echo "You enter PHP Version was:"${php_version}
-                Echo_Red "Error! You entered a wrong version number, please check!"
-                exit 1
-            fi
-        fi
-    fi
+    cd "${cur_dir}/src" || return 1
+    Download_Files "${Download_Mirror}/web/php/php-${php_version}.tar.bz2" "php-${php_version}.tar.bz2" ||
+        Download_Files "https://www.php.net/distributions/php-${php_version}.tar.bz2" "php-${php_version}.tar.bz2" || return 1
+    tar tf "php-${php_version}.tar.bz2" >/dev/null || return 1
 
     if echo "${php_version}" | grep -Eqi '^5.2.';then
         Download_Files ${Download_Mirror}/web/phpfpm/php-${php_version}-fpm-0.5.14.diff.gz php-${php_version}-fpm-0.5.14.diff.gz
     fi
-    lnmp stop
+    Check_PHP_Option
+    Install_PHP_Dependent
+    Check_Openssl
+    [ ! -e "/usr/local/oldphp${Upgrade_Date}" ] && [ ! -e "/usr/local/failedphp${Upgrade_Date}" ] || return 1
+    PHP_Upgrade_Active=y
+    if [ "${Stack}" = "lnmp" ]; then
+        /etc/init.d/php-fpm stop
+    else
+        /etc/init.d/httpd stop
+    fi
 
     if [ "${Stack}" = "lnmp" ]; then
         mv /usr/local/php /usr/local/oldphp${Upgrade_Date}
         mv /etc/init.d/php-fpm /usr/local/oldphp${Upgrade_Date}/init.d.php-fpm.bak.${Upgrade_Date}
     else
-        if echo "${Cur_PHP_Version}" | grep -Eqi '^7.';then
-            mv /usr/local/apache/modules/libphp7.so /usr/local/apache/modules/libphp7.so.bak.${Upgrade_Date}
+        if echo "${Cur_PHP_Version}" | grep -Eqi '^8\.';then
+            PHP_Backup_Module=libphp.so
+        elif echo "${Cur_PHP_Version}" | grep -Eqi '^7\.';then
+            PHP_Backup_Module=libphp7.so
         else
-            mv /usr/local/apache/modules/libphp5.so /usr/local/apache/modules/libphp5.so.bak.${Upgrade_Date}
+            PHP_Backup_Module=libphp5.so
         fi
+        cp -p "/usr/local/apache/modules/${PHP_Backup_Module}" "/usr/local/apache/modules/${PHP_Backup_Module}.bak.${Upgrade_Date}"
         mv /usr/local/php /usr/local/oldphp${Upgrade_Date}
         \cp /usr/local/apache/conf/httpd.conf /usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}
         if echo "${Cur_PHP_Version}" | grep -Eqi '^7.' && echo "${php_version}" | grep -Eqi '^5.';then
             sed -i '/libphp7.so/d' /usr/local/apache/conf/httpd.conf
         fi
     fi
-    Check_PHP_Option
-    Install_PHP_Dependent
-    Check_Openssl
 }
 
-Install_PHP_Dependent()
+Rollback_PHP()
+{
+    [ "${PHP_Upgrade_Active}" = "y" ] || return 0
+    if [ "${Stack}" = "lnmp" ]; then
+        /etc/init.d/php-fpm stop 2>/dev/null
+    else
+        /etc/init.d/httpd stop 2>/dev/null
+    fi
+    if [ -d "/usr/local/oldphp${Upgrade_Date}" ]; then
+        if [ -e /usr/local/php ]; then
+            mv /usr/local/php "/usr/local/failedphp${Upgrade_Date}" || return 1
+        fi
+        mv "/usr/local/oldphp${Upgrade_Date}" /usr/local/php || return 1
+    fi
+    if [ "${Stack}" = "lnmp" ]; then
+        [ ! -f "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" ] || cp -p "/usr/local/php/init.d.php-fpm.bak.${Upgrade_Date}" /etc/init.d/php-fpm
+        /etc/init.d/php-fpm start || return 1
+    else
+        [ ! -f "/usr/local/apache/modules/${PHP_Backup_Module}.bak.${Upgrade_Date}" ] || cp -p "/usr/local/apache/modules/${PHP_Backup_Module}.bak.${Upgrade_Date}" "/usr/local/apache/modules/${PHP_Backup_Module}"
+        [ ! -f "/usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}" ] || cp -p "/usr/local/apache/conf/httpd.conf.bak.${Upgrade_Date}" /usr/local/apache/conf/httpd.conf
+        /etc/init.d/httpd start || return 1
+    fi
+    Echo_Red "PHP upgrade failed; the previous installation has been restored."
+}
+
+Install_PHP_Legacy_Dependent()
 {
     echo "Installing Dependent for PHP..."
     if [ "$PM" = "yum" ]; then
@@ -166,45 +174,65 @@ Install_PHP_Dependent()
 
     ldconfig
 }
+Install_PHP_Dependent()
+{
+    if [ "$PM" = "apt" ] && [[ "${php_version}" = 8.* ]]; then
+        Install_Debian_Build_Dependencies || return 1
+    elif [ "$PM" = "yum" ] && [[ "${php_version}" = 8.* ]]; then
+        Install_RPM_Build_Dependencies || return 1
+    else
+        Install_PHP_Legacy_Dependent
+    fi
+}
 
 Check_PHP_Upgrade_Files()
 {
-    Echo_LNMPA_Upgrade_PHP_Failed()
-    {
-        Echo_Red "======== upgrade php failed ======"
-        Echo_Red "upgrade php log: /root/upgrade_a_php${Upgrade_Date}.log"
-        echo "You upload upgrade_a_php.log to LNMP Forum for help."    
-    }
-    rm -rf ${cur_dir}/src/php-${php_version}
-    if [ "${Stack}" = "lnmp" ]; then
-        if [[ -s /usr/local/php/sbin/php-fpm && -s /etc/init.d/php-fpm && -s /usr/local/php/etc/php.ini && -s /usr/local/php/bin/php ]]; then
-            Echo_Green "======== upgrade php completed ======"
-        else
-            Echo_Red "======== upgrade php failed ======"
-            Echo_Red "upgrade php log: /root/upgrade_lnmp_php${Upgrade_Date}.log"
-            echo "You upload upgrade_lnmp_php.log to LNMP Forum for help."
-        fi
-    else
-        if echo "${php_version}" | grep -Eqi '^7.';then
-            if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/libphp7.so && -s /usr/local/apache/conf/httpd.conf ]]; then
-                Echo_Green "======== upgrade php completed ======"
-            else
-                Echo_LNMPA_Upgrade_PHP_Failed
-            fi
-        elif echo "${php_version}" | grep -Eqi '^8.';then
-            if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/libphp.so && -s /usr/local/apache/conf/httpd.conf ]]; then
-                Echo_Green "======== upgrade php completed ======"
-            else
-                Echo_LNMPA_Upgrade_PHP_Failed
-            fi
-        else
-            if [[ -s /usr/local/apache/modules/libphp5.so && -s /usr/local/php/etc/php.ini && -s /usr/local/php/bin/php ]]; then
-                Echo_Green "======== upgrade php completed ======"
-            else
-                Echo_LNMPA_Upgrade_PHP_Failed
-            fi
-        fi
+    local Backup="/usr/local/oldphp${Upgrade_Date}"
+    local Module=libphp5.so
+    local Module_Output
+    [ -x /usr/local/php/bin/php ] || return 1
+    if [ -f "${Backup}/etc/php.ini" ]; then
+        cp -p "${Backup}/etc/php.ini" /usr/local/php/etc/php.ini || return 1
     fi
+    if [ -d "${Backup}/conf.d" ]; then
+        cp -a "${Backup}/conf.d/." /usr/local/php/conf.d/ || return 1
+    fi
+    if [[ "${php_version}" = 8.5.* ]]; then
+        . "${cur_dir}/include/opcache.sh"
+        PHP85_Migrate_Opcache_Ini /usr/local/php/conf.d/004-opcache.ini || return 1
+    fi
+    if [[ "${php_version}" =~ ^8\.[45]\. && "${Enable_PHP_Imap}" = "y" ]]; then
+        . "${cur_dir}/include/php_imap.sh"
+        Build_PHP_Imap /usr/local/php "${php_version}" || return 1
+    fi
+    /usr/local/php/bin/php -v || return 1
+    Module_Output=$(/usr/local/php/bin/php -m 2>&1) || return 1
+    if printf '%s\n' "${Module_Output}" | grep -Eq 'PHP (Warning|Fatal error)|Unable to load'; then
+        Echo_Red "PHP extensions are incompatible; upgrade their modules before switching."
+        return 1
+    fi
+    if [ "${Stack}" = "lnmp" ]; then
+        [ -x /usr/local/php/sbin/php-fpm ] || return 1
+        if [ -f "${Backup}/etc/php-fpm.conf" ]; then
+            cp -p "${Backup}/etc/php-fpm.conf" /usr/local/php/etc/php-fpm.conf || return 1
+        fi
+        if [ -d "${Backup}/etc/php-fpm.d" ]; then
+            cp -a "${Backup}/etc/php-fpm.d/." /usr/local/php/etc/php-fpm.d/ || return 1
+        fi
+        /usr/local/php/sbin/php-fpm -t || return 1
+        /etc/init.d/php-fpm start || return 1
+        /etc/init.d/php-fpm status || return 1
+    else
+        case "${php_version}" in
+            8.*) Module=libphp.so ;;
+            7.*) Module=libphp7.so ;;
+        esac
+        [ -s "/usr/local/apache/modules/${Module}" ] || return 1
+        /usr/local/apache/bin/httpd -t || return 1
+        /etc/init.d/httpd start || return 1
+        /etc/init.d/httpd status || return 1
+    fi
+    return 0
 }
 
 Upgrade_PHP_52()
@@ -272,7 +300,6 @@ EOF
         chmod +x /etc/init.d/php-fpm
         LNMP_PHP_Opt
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -345,7 +372,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -366,7 +393,6 @@ EOF
     LNMP_PHP_Opt
 fi
 
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -438,7 +464,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -459,7 +485,6 @@ EOF
     LNMP_PHP_Opt
 fi
 
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -547,7 +572,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -568,7 +593,6 @@ EOF
     LNMP_PHP_Opt
 fi
 
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -627,7 +651,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -650,7 +674,6 @@ fi
     if [ "${Stack}" != "lnmp" ]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -704,7 +727,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -727,7 +750,6 @@ fi
     if [ "${Stack}" != "lnmp" ]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -781,7 +803,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -804,7 +826,6 @@ fi
     if [ "${Stack}" != "lnmp" ]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -858,7 +879,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -881,7 +902,6 @@ fi
     if [ "${Stack}" != "lnmp" ]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -935,7 +955,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -959,7 +979,6 @@ fi
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -1012,7 +1031,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1036,7 +1055,6 @@ fi
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
@@ -1089,7 +1107,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1113,19 +1131,20 @@ fi
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
 Upgrade_PHP_83()
 {
+    local Opcache_Option='--enable-opcache'
+    [[ "${php_version}" != 8.5.* ]] || Opcache_Option=''
     Install_Libzip
     Echo_Blue "[+] Installing ${php_version}"
     Tar_Cd php-${php_version}.tar.bz2 php-${php_version}
     if [ "${Stack}" = "lnmp" ]; then
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} ${Opcache_Option} --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
     else
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} ${Opcache_Option} --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
     fi
 
     PHP_Make_Install
@@ -1166,7 +1185,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1190,11 +1209,20 @@ fi
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
         sed -i '/^LoadModule php7_module/d' /usr/local/apache/conf/httpd.conf
     fi
-    lnmp start
     Check_PHP_Upgrade_Files
 }
 
-Upgrade_PHP()
+Upgrade_PHP_84()
+{
+    Upgrade_PHP_83
+}
+
+Upgrade_PHP_85()
+{
+    Upgrade_PHP_84
+}
+
+Upgrade_PHP_Transaction()
 {
     Start_Upgrade_PHP
     if echo "${php_version}" | grep -Eqi '^5.2.';then
@@ -1221,8 +1249,20 @@ Upgrade_PHP()
         Upgrade_PHP_82
     elif echo "${php_version}" | grep -Eqi '^8.3.';then
         Upgrade_PHP_83
+    elif echo "${php_version}" | grep -Eqi '^8.4.';then
+        Upgrade_PHP_84
+    elif echo "${php_version}" | grep -Eqi '^8.5.';then
+        Upgrade_PHP_85
     else
         Echo_Red "PHP version: ${php_version} is not supported."
         exit 1
     fi
+    PHP_Upgrade_Active=n
+    Echo_Green "======== upgrade php completed ======"
+}
+
+Upgrade_PHP()
+{
+    PHP_Upgrade_Active=n
+    Run_Upgrade_Guarded Upgrade_PHP_Transaction Rollback_PHP
 }

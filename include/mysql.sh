@@ -17,8 +17,60 @@ MySQL_Gcc7_Patch()
     fi
 }
 
+Secure_MySQL8_Install()
+(
+    set +x
+    local Escaped_Password User_Statement User_Statements Client
+    local Service_Attempted=n MySQL_Client_Cnf='' MySQL_Bin=''
+    Secure_MySQL8_Cleanup()
+    {
+        local Status=$?
+        trap - EXIT INT TERM
+        if [ "$Service_Attempted" = y ]; then
+            /etc/init.d/mysql stop || {
+                Echo_Red 'MySQL security initialization failed and service stop failed; stop this instance immediately before allowing access.'
+                Status=1
+            }
+        fi
+        TempMycnf_Clean || Status=1
+        exit "$Status"
+    }
+    trap Secure_MySQL8_Cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    Escaped_Password=${DB_Root_Password//\\/\\\\}
+    Escaped_Password=${Escaped_Password//\'/\\\'}
+    if [ -z "${DB_Root_Password}" ] || [[ "${DB_Root_Password}" = *$'\n'* || "${DB_Root_Password}" = *$'\r'* ]]; then
+        Echo_Red 'A nonempty, single-line MySQL root password is required.'
+        return 1
+    fi
+    Service_Attempted=y
+    /etc/init.d/mysql start || return 1
+    for Client in mysql mysqldump myisamchk mysqld_safe mysqlcheck; do
+        [ ! -x "/usr/local/mysql/bin/${Client}" ] || ln -sf "/usr/local/mysql/bin/${Client}" "/usr/bin/${Client}" || return 1
+    done
+    MySQL_Bin=/usr/local/mysql/bin/mysql
+    Make_TempMycnf '' || return 1
+    Do_Query "ALTER USER 'root'@'localhost' IDENTIFIED BY '${Escaped_Password}';" || return 1
+    Make_TempMycnf "${DB_Root_Password}" || return 1
+    Do_Query 'SELECT 1;' || return 1
+    # DROP USER keeps MySQL 8 grant tables and its privilege cache consistent.
+    User_Statements=$("${MySQL_Bin}" --defaults-file="${MySQL_Client_Cnf}" --batch --skip-column-names -e "SELECT CONCAT('DROP USER IF EXISTS ', QUOTE(User), '@', QUOTE(Host), ';') FROM mysql.user WHERE User='' OR (User='root' AND Host NOT IN ('localhost','127.0.0.1','::1'));") || return 1
+    while IFS= read -r User_Statement; do
+        [ -z "$User_Statement" ] || Do_Query "$User_Statement" || return 1
+    done <<< "$User_Statements"
+    Do_Query 'DROP DATABASE IF EXISTS test;' || return 1
+    /etc/init.d/mysql stop || return 1
+    Service_Attempted=n
+    Echo_Green "MySQL root authentication verified; anonymous users and test database removed."
+)
+
 MySQL_Sec_Setting()
 {
+    if [[ "${DBSelect}" =~ ^(5|11)$ ]] || [[ "${mysql_version}" = 8.* ]]; then
+        Secure_MySQL8_Install || exit 1
+        return 0
+    fi
     if [ -d "/proc/vz" ]; then
         ulimit -s unlimited
     fi
@@ -53,7 +105,7 @@ EOF
         if [ "${DBSelect}" = "4" ] || echo "${mysql_version}" | grep -Eqi '^5.7.'; then
             /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${DB_Root_Password}');"
             [ $? -eq 0 ] && echo "Set password Sucessfully." || echo "Set password failed!"
-        elif [ "${DBSelect}" = "5" ] || echo "${mysql_version}" | grep -Eqi '^8.'; then
+        elif [[ "${DBSelect}" =~ ^(5|11)$ ]] || echo "${mysql_version}" | grep -Eqi '^8.'; then
             /usr/local/mysql/bin/mysql --defaults-file=~/.emptymy.cnf -e "SET PASSWORD FOR 'root'@'localhost' = '${DB_Root_Password}';"
             [ $? -eq 0 ] && echo "Set password Sucessfully." || echo "Set password failed!"
         else
@@ -74,7 +126,7 @@ EOF
     echo "Update root password..."
     if [ "${DBSelect}" = "4" ] || echo "${mysql_version}" | grep -Eqi '^5.7.'; then
         Do_Query "UPDATE mysql.user SET authentication_string=PASSWORD('${DB_Root_Password}') WHERE User='root';"
-    elif [ "${DBSelect}" = "5" ] || echo "${mysql_version}" | grep -Eqi '^8.0.'; then
+    elif [[ "${DBSelect}" =~ ^(5|11)$ ]] || echo "${mysql_version}" | grep -Eqi '^8.'; then
         Do_Query "SET PASSWORD FOR 'root'@'localhost' = '${DB_Root_Password}';"
     else
         Do_Query "UPDATE mysql.user SET Password=PASSWORD('${DB_Root_Password}') WHERE User='root';"
@@ -177,14 +229,60 @@ MySQL_Opt()
 
 Check_MySQL_Data_Dir()
 {
-    if [ -d "${MySQL_Data_Dir}" ]; then
-        datetime=$(date +"%Y%m%d%H%M%S")
-        mkdir -p /root/mysql-data-dir-backup${datetime}/
-        \cp ${MySQL_Data_Dir}/* /root/mysql-data-dir-backup${datetime}/
-        rm -rf ${MySQL_Data_Dir}/*
-    else
-        mkdir -p ${MySQL_Data_Dir}
+    local Parent="${MySQL_Data_Dir}" Listing Router
+    if [[ ! "${MySQL_Data_Dir}" =~ ^/[A-Za-z0-9_./-]+$ || "${MySQL_Data_Dir}" = *//* || "/${MySQL_Data_Dir}/" = *'/../'* || "/${MySQL_Data_Dir}/" = *'/./'* ]]; then
+        Echo_Red "Unsafe MySQL data directory; no files have been removed."
+        exit 1
     fi
+    case "${MySQL_Data_Dir%/}" in
+        ''|/|/usr|/usr/local|/usr/local/mysql|/etc|/etc/*|/dev|/dev/*|/proc|/proc/*|/sys|/sys/*|/boot|/boot/*|/run|/run/*|/var|/var/lib|/root|/home|/tmp|/opt|/srv|/mnt|/media)
+            Echo_Red 'Unsafe MySQL data directory.'; exit 1 ;;
+    esac
+    while [ "$Parent" != / ]; do
+        [ ! -L "$Parent" ] || { Echo_Red 'Symlink MySQL data paths are not supported.'; exit 1; }
+        Parent=${Parent%/*}
+        [ -n "$Parent" ] || Parent=/
+    done
+    if [ -e "${MySQL_Data_Dir}" ] && [ ! -d "${MySQL_Data_Dir}" ]; then
+        Echo_Red 'MySQL data path is not a directory.'; exit 1
+    fi
+    Listing=''
+    if [ -d "${MySQL_Data_Dir}" ]; then
+        Listing=$(find "${MySQL_Data_Dir}" -mindepth 1 -maxdepth 1 -print -quit) || exit 1
+    fi
+    # MySQL 8.4 installs empty Router state directories under the default prefix.
+    if [ -n "$Listing" ] && [ "${1:-}" = --mysql84-after-build ] && [ "${MySQL_Data_Dir}" = /usr/local/mysql/var ]; then
+        Router="${MySQL_Data_Dir}/lib/mysqlrouter"
+        if [ -d "$Router" ] && [ ! -L "${MySQL_Data_Dir}/lib" ] && [ ! -L "$Router" ]; then
+            Listing=$(find "${MySQL_Data_Dir}" -mindepth 1 ! -path "${MySQL_Data_Dir}/lib" ! -path "$Router" -print -quit) || exit 1
+            if [ -z "$Listing" ]; then
+                rmdir -- "$Router" "${MySQL_Data_Dir}/lib" || exit 1
+                Listing=$(find "${MySQL_Data_Dir}" -mindepth 1 -maxdepth 1 -print -quit) || exit 1
+            fi
+        fi
+    fi
+    if [ -n "$Listing" ]; then
+        Echo_Red "MySQL data directory is not empty. Use the backed-up upgrade workflow; fresh installation will not overwrite data."
+        exit 1
+    fi
+    [ "${1:-}" != --check-only ] || return 0
+    mkdir -p -- "${MySQL_Data_Dir}" || exit 1
+}
+
+Check_MySQL_Install_Target()
+{
+    local Entry
+    for Entry in /usr/local/mariadb /etc/my.cnf /etc/mysql /etc/init.d/mysql /etc/init.d/mariadb /etc/systemd/system/mysql.service /etc/systemd/system/mariadb.service; do
+        if [ -e "$Entry" ] || [ -L "$Entry" ]; then
+            Echo_Red "Existing database configuration or installation preserved: $Entry. Use a separately backed-up upgrade workflow."
+            return 1
+        fi
+    done
+    if [ "${1:-}" != --after-build ] && { [ -e /usr/local/mysql ] || [ -L /usr/local/mysql ]; }; then
+        Echo_Red 'MySQL is already installed. Use upgrade.sh mysql.'
+        return 1
+    fi
+    [ ! -L /usr/local/mysql ] || return 1
 }
 
 Install_MySQL_51()
@@ -227,6 +325,7 @@ thread_cache_size = 8
 query_cache_size = 8M
 tmp_table_size = 16M
 
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -343,6 +442,7 @@ thread_cache_size = 8
 query_cache_size = 8M
 tmp_table_size = 16M
 
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -419,7 +519,7 @@ Install_MySQL_56()
     else
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
+            Install_Openssl_Compat
             MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
         else
             MySQL_WITH_SSL=''
@@ -463,6 +563,7 @@ tmp_table_size = 16M
 performance_schema_max_table_instances = 500
 
 explicit_defaults_for_timestamp = true
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -569,7 +670,7 @@ Install_MySQL_57()
     else
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
+            Install_Openssl_Compat
             MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
         else
             MySQL_WITH_SSL=''
@@ -611,6 +712,7 @@ tmp_table_size = 16M
 performance_schema_max_table_instances = 500
 
 explicit_defaults_for_timestamp = true
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -716,6 +818,7 @@ tmp_table_size = 16M
 performance_schema_max_table_instances = 500
 
 explicit_defaults_for_timestamp = true
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -778,9 +881,28 @@ EOF
     MySQL_Sec_Setting
 }
 
+Prepare_CentOS8_MySQL_Compiler()
+{
+    local Prefix=/opt/rh/gcc-toolset-10 Version
+    [ "${DISTRO}" = CentOS ] || return 0
+    [[ "${CentOS_Version}" = 8 || "${CentOS_Version}" = 8.* ]] || return 0
+    # Keep an explicitly selected compiler; CMake validates custom toolchains.
+    [ -z "${CC:-}" ] && [ -z "${CXX:-}" ] || return 0
+    if [ ! -x "$Prefix/root/usr/bin/gcc" ] || [ ! -x "$Prefix/root/usr/bin/g++" ] || [ ! -s "$Prefix/enable" ]; then
+        Echo_Red 'MySQL 8.4 on CentOS 8 requires gcc-toolset-10 compiler and binutils packages.'
+        return 1
+    fi
+    . "$Prefix/enable" || return 1
+    Version=$("$Prefix/root/usr/bin/g++" -dumpversion) || return 1
+    [[ "${Version%%.*}" =~ ^[0-9]+$ ]] && [ "${Version%%.*}" -ge 10 ] || return 1
+    export CC="$Prefix/root/usr/bin/gcc" CXX="$Prefix/root/usr/bin/g++"
+    Echo_Blue "Using CentOS 8 MySQL compiler: $CXX ($Version)"
+}
+
 Install_MySQL_84()
 {
-    rm -f /etc/my.cnf
+    Check_MySQL_Install_Target || return 1
+    Check_MySQL_Data_Dir --check-only || return 1
     if [ "${Bin}" = "y" ]; then
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Generic Binaries..."
         Tar_Cd ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
@@ -789,14 +911,19 @@ Install_MySQL_84()
     else
         Echo_Blue "[+] Installing ${Mysql_Ver} Using Source code..."
         Tar_Cd ${Mysql_Ver}.tar.gz ${Mysql_Ver}
-        Install_Boost
-        mkdir build && cd build
-        cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST}
-        Make_Install
+        Install_Boost || return 1
+        mkdir build && cd build || return 1
+        (
+            Prepare_CentOS8_MySQL_Compiler || exit 1
+            cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local/mysql -DSYSCONFDIR=/etc -DWITH_MYISAM_STORAGE_ENGINE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 -DWITH_PARTITION_STORAGE_ENGINE=1 -DWITH_FEDERATED_STORAGE_ENGINE=1 -DEXTRA_CHARSETS=all -DDEFAULT_CHARSET=utf8mb4 -DDEFAULT_COLLATION=utf8mb4_general_ci -DWITH_EMBEDDED_SERVER=1 -DENABLED_LOCAL_INFILE=1 ${MySQL_WITH_BOOST} || exit 1
+            Make_Install
+        ) || return 1
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    Check_MySQL_Install_Target --after-build || return 1
+    Check_MySQL_Data_Dir --mysql84-after-build
+    groupadd -f mysql || return 1
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql || return 1
 
     cat > /etc/my.cnf<<EOF
 [client]
@@ -822,6 +949,7 @@ tmp_table_size = 16M
 performance_schema_max_table_instances = 500
 
 explicit_defaults_for_timestamp = true
+bind-address = 127.0.0.1
 #skip-networking
 max_connections = 500
 max_connect_errors = 100
@@ -867,7 +995,7 @@ EOF
     MySQL_Opt
     Check_MySQL_Data_Dir
     chown -R mysql:mysql /usr/local/mysql
-    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql
+    /usr/local/mysql/bin/mysqld --initialize-insecure --basedir=/usr/local/mysql --datadir=${MySQL_Data_Dir} --user=mysql || return 1
     chown -R mysql:mysql ${MySQL_Data_Dir}
     \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
     \cp ${cur_dir}/init.d/mysql.service /etc/systemd/system/mysql.service

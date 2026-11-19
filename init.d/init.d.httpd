@@ -85,7 +85,8 @@ case $ARGV in
     start|stop|restart|graceful|graceful-stop)
         echo -n "$ARGV apache... "
         $HTTPD -k $ARGV
-        if [ "$?" != 0 ] ; then
+        ERROR=$?
+        if [ "$ERROR" != 0 ] ; then
             echo " failed"
         else
             echo " done"
@@ -94,14 +95,21 @@ case $ARGV in
     configtest)
         echo -n "test apache configure... "
         $HTTPD -t
-        if [ "$?" != 0 ] ; then
+        ERROR=$?
+        if [ "$ERROR" != 0 ] ; then
             echo " failed"
         else
             echo " done"
         fi
         ;;
     status)
-        if [ -f "$PID" ]; then  
+        Daemon_PID=''
+        if [ -r "$PID" ]; then IFS= read -r Daemon_PID < "$PID"; fi
+        case "$Daemon_PID" in
+            ''|*[!0-9]*) ERROR=3 ;;
+            *) [ "$Daemon_PID" -gt 1 ] && kill -0 "$Daemon_PID" 2>/dev/null || ERROR=3 ;;
+        esac
+        if [ "$ERROR" = 0 ]; then
             echo "Apache is running."
         else
             echo "Apache is stopped."
@@ -109,5 +117,7 @@ case $ARGV in
         ;;
     *)
         echo $"Usage: $0 {start|stop|restart|graceful|graceful-stop|configtest|status}"
+        ERROR=2
         ;;
 esac
+exit "$ERROR"

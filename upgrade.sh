@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
+set -o pipefail
 
 # Check if user is root
 if [ $(id -u) != "0" ]; then
@@ -21,6 +22,7 @@ Upgrade_Date=$(date +"%Y%m%d%H%M%S")
 . include/mysql.sh
 . include/mariadb.sh
 . include/upgrade_nginx.sh
+. include/upgrade_guard.sh
 . include/upgrade_php.sh
 . include/upgrade_mysql.sh
 . include/upgrade_mariadb.sh
@@ -49,7 +51,7 @@ Display_Upgrade_Menu()
 
 clear
 echo "+-----------------------------------------------------------------------+"
-echo "|            Upgrade script for LNMP V2.1, Written by Licess            |"
+echo "|            Upgrade script for LNMP V${LNMP_Ver}, Written by Licess            |"
 echo "+-----------------------------------------------------------------------+"
 echo "|     A tool to upgrade Nginx,MySQL/Mariadb,PHP for LNMP/LNMPA/LAMP     |"
 echo "+-----------------------------------------------------------------------+"

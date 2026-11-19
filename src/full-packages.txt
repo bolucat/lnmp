@@ -1,0 +1,18 @@
+# modern-source profile; optional sources are downloaded separately.
+php-8.2.35.tar.bz2
+php-8.3.36.tar.bz2
+php-8.4.27.tar.bz2
+php-8.5.12.tar.bz2
+openssl-3.5.9.tar.gz
+imap-1.0.3.tgz
+mysql-8.4.11.tar.gz
+phpMyAdmin-5.2.3-all-languages.tar.xz
+p.tar.gz
+httpd-2.4.69.tar.bz2
+nginx-1.30.6.tar.gz
+libiconv-1.19.tar.gz
+freetype-2.14.3.tar.xz
+pcre2-10.49.tar.bz2
+apr-1.7.6.tar.bz2
+apr-util-1.6.5.tar.bz2
+nghttp2-1.70.0.tar.bz2

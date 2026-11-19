@@ -9,7 +9,8 @@ Install_Apache_22()
         mkdir -p ${Default_Website_Dir}
         chmod +w ${Default_Website_Dir}
         mkdir -p /home/wwwlogs
-        chmod 777 /home/wwwlogs
+        chmod 0750 /home/wwwlogs
+        chown www:www /home/wwwlogs
         chown -R www:www ${Default_Website_Dir}
     fi
     Tar_Cd ${Apache_Ver}.tar.bz2 ${Apache_Ver}
@@ -49,7 +50,7 @@ Install_Apache_22()
         sed -i "s#/home/wwwroot/default#${Default_Website_Dir}#g" /usr/local/apache/conf/extra/httpd-vhosts.conf
     fi
 
-    if [[ "${PHPSelect}" =~ ^[6789]|1[0-3]$ ]]; then
+    if [[ "${PHPSelect}" =~ ^([6-9]|1[0-6])$ ]]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
 
@@ -67,34 +68,37 @@ Install_Apache_24()
         mkdir -p ${Default_Website_Dir}
         chmod +w ${Default_Website_Dir}
         mkdir -p /home/wwwlogs
-        chmod 777 /home/wwwlogs
+        chmod 0750 /home/wwwlogs
+        chown www:www /home/wwwlogs
         chown -R www:www ${Default_Website_Dir}
-        Install_Openssl_New
-        Install_Nghttp2
+        Install_Openssl_New || return 1
+        Install_Nghttp2 || return 1
     fi
     Tar_Cd ${Apache_Ver}.tar.bz2 ${Apache_Ver}
     cd srclib
     if [ -s "${cur_dir}/src/${APR_Ver}.tar.bz2" ]; then
         echo "${APR_Ver}.tar.bz2 [found]"
-        cp ${cur_dir}/src/${APR_Ver}.tar.bz2 .
+        Verify_Download_File "${cur_dir}/src/${APR_Ver}.tar.bz2" || return 1
+        cp ${cur_dir}/src/${APR_Ver}.tar.bz2 . || return 1
     else
-        Download_Files ${Download_Mirror}/web/apache/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2
+        Download_Files ${Download_Mirror}/web/apache/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2 || return 1
     fi
     if [ -s "${cur_dir}/src/${APR_Util_Ver}.tar.bz2" ]; then
         echo "${APR_Util_Ver}.tar.bz2 [found]"
-        cp ${cur_dir}/src/${APR_Util_Ver}.tar.bz2 .
+        Verify_Download_File "${cur_dir}/src/${APR_Util_Ver}.tar.bz2" || return 1
+        cp ${cur_dir}/src/${APR_Util_Ver}.tar.bz2 . || return 1
     else
-        Download_Files ${Download_Mirror}/web/apache/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2
+        Download_Files ${Download_Mirror}/web/apache/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2 || return 1
     fi
-    tar jxf ${APR_Ver}.tar.bz2
-    tar jxf ${APR_Util_Ver}.tar.bz2
-    mv ${APR_Ver} apr
-    mv ${APR_Util_Ver} apr-util
+    tar jxf ${APR_Ver}.tar.bz2 || return 1
+    tar jxf ${APR_Util_Ver}.tar.bz2 || return 1
+    mv ${APR_Ver} apr || return 1
+    mv ${APR_Util_Ver} apr-util || return 1
     cd ..
     if [ "${Stack}" = "lamp" ]; then
-        ./configure --prefix=/usr/local/apache --enable-mods-shared=most --enable-headers --enable-mime-magic --enable-proxy --enable-so --enable-rewrite --enable-ssl ${apache_with_ssl} --enable-deflate --with-pcre --with-included-apr --with-apr-util --enable-mpms-shared=all --enable-remoteip --enable-http2 --with-nghttp2=/usr/local/nghttp2
+        ./configure --prefix=/usr/local/apache --enable-mods-shared=most --enable-headers --enable-mime-magic --enable-proxy --enable-so --enable-rewrite --enable-ssl ${apache_with_ssl} --enable-deflate --with-pcre --with-included-apr --with-apr-util --enable-mpms-shared=all --enable-remoteip --enable-http2 --with-nghttp2=/usr/local/nghttp2 || return 1
     else
-        ./configure --prefix=/usr/local/apache --enable-mods-shared=most --enable-headers --enable-mime-magic --enable-proxy --enable-so --enable-rewrite --enable-ssl --with-ssl --enable-deflate --with-pcre --with-included-apr --with-apr-util --enable-mpms-shared=all --enable-remoteip
+        ./configure --prefix=/usr/local/apache --enable-mods-shared=most --enable-headers --enable-mime-magic --enable-proxy --enable-so --enable-rewrite --enable-ssl --with-ssl --enable-deflate --with-pcre --with-included-apr --with-apr-util --enable-mpms-shared=all --enable-remoteip || return 1
     fi
     Make_Install
     cd ${cur_dir}/src
@@ -123,7 +127,7 @@ Install_Apache_24()
         sed -i "s#/home/wwwroot/default#${Default_Website_Dir}#g" /usr/local/apache/conf/extra/httpd-vhosts.conf
     fi
 
-    if [[ "${PHPSelect}" =~ ^[6789]|1[0-3]$ ]]; then
+    if [[ "${PHPSelect}" =~ ^([6-9]|1[0-6])$ ]]; then
         sed -i '/^LoadModule php5_module/d' /usr/local/apache/conf/httpd.conf
     fi
 

@@ -26,40 +26,56 @@ prog="Pure-FTPd"
 
 start() {
     echo -n $"Starting $prog... "
-    $PURE_FTPD $PURE_CONF
-    if [ "$?" = 0 ] ; then
+    "$PURE_FTPD" "$PURE_CONF"
+    RETVAL=$?
+    if [ "$RETVAL" = 0 ] ; then
         echo " done"
     else
         echo " failed"
     fi
+    return "$RETVAL"
 }
 
 stop() {
     echo -n $"Stopping $prog...  "
-    if [ ! -f "$PURE_PID" ]; then
+    if ! status >/dev/null; then
         echo -n $"$prog is not running."
-        exit 1
+        return 1
     fi
-    kill `cat $PURE_PID`
-    if [ "$?" = 0 ] ; then
+    local Daemon_PID
+    IFS= read -r Daemon_PID < "$PURE_PID" || return 1
+    kill "$Daemon_PID"
+    RETVAL=$?
+    if [ "$RETVAL" = 0 ] ; then
         echo " done"
     else
         echo " failed"
     fi
+    return "$RETVAL"
 }
 
 restart(){
     echo $"Restarting $prog..."
-    $0 stop
+    stop || return $?
     sleep 2
-    $0 start
+    start
 }
 
 status(){
-    if [ -f "$PURE_PID" ]; then
+    local Daemon_PID='' Running=n
+    if [ -r "$PURE_PID" ]; then IFS= read -r Daemon_PID < "$PURE_PID"; fi
+    if [[ "$Daemon_PID" =~ ^[1-9][0-9]*$ ]] && [ "$Daemon_PID" -gt 1 ] && kill -0 "$Daemon_PID" 2>/dev/null; then
+        Running=y
+        if [ -d /proc ]; then
+            [ "$(readlink -f "/proc/$Daemon_PID/exe")" = "$(readlink -f "$PURE_FTPD")" ] || Running=n
+        fi
+    fi
+    if [ "$Running" = y ]; then
         echo $"$prog is running."
+        return 0
     else
         echo $"$prog is not running."
+        return 3
     fi
 }
 
@@ -78,4 +94,5 @@ case "$1" in
         ;;
   *)
         echo $"Usage: $0 {start|stop|restart}"
+        exit 2
 esac

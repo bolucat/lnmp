@@ -132,6 +132,11 @@ PHP_with_Sodium()
 
 PHP_with_Imap()
 {
+    local Target_Version=${php_version:-${Php_Ver#php-}}
+    if [[ "${Target_Version}" =~ ^8\.[4-9]\. ]] && [ "${Enable_PHP_Imap}" != "n" ]; then
+        with_imap=''
+        return 0
+    fi
     if [ "${Enable_PHP_Imap}" = "n" ]; then
         with_imap=''
     else
@@ -176,15 +181,15 @@ PHP_with_Intl()
 
 Check_PHP_Option()
 {
-    PHP_with_openssl
-    PHP_with_curl
-    PHP_with_fileinfo
-    PHP_with_Exif
-    PHP_with_Ldap
-    PHP_with_Bz2
-    PHP_with_Sodium
-    PHP_with_Imap
-    PHP_with_Intl
+    PHP_with_openssl || return 1
+    PHP_with_curl || return 1
+    PHP_with_fileinfo || return 1
+    PHP_with_Exif || return 1
+    PHP_with_Ldap || return 1
+    PHP_with_Bz2 || return 1
+    PHP_with_Sodium || return 1
+    PHP_with_Imap || return 1
+    PHP_with_Intl || return 1
     PHP_Buildin_Option="${with_exif} ${with_ldap} ${with_bz2} ${with_sodium} ${with_imap} ${with_icu_dir}"
 }
 
@@ -207,39 +212,36 @@ Pear_Pecl_Set()
 }
 
 Install_Composer()
-{
-    if [ "${CheckMirror}" != "n" ]; then
-        echo "Downloading Composer..."
-        if echo "${PHPSelect}" | grep -Eqi '^[1-8]' || echo "${php_version}" | grep -Eqi '^5.[2-6].*|7.[0-2].*' || echo "${Php_Ver}" | grep -Eqi "php-5.[2-6].*|php-7.[0-2].*"; then
-            wget --progress=dot:giga --prefer-family=IPv4 --no-check-certificate -T 120 -t3 ${Download_Mirror}/web/php/composer/composer-2.2.phar -O /usr/local/bin/composer
-            if [ $? -eq 0 ]; then
-                echo "Composer install successfully."
-                chmod +x /usr/local/bin/composer
-            else
-                echo "Composer install failed, try to from composer official website..."
-                curl -sS --connect-timeout 30 -m 60 https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer --2.2
-                if [ $? -eq 0 ]; then
-                    echo "Composer install successfully."
-                fi
-            fi
-        else
-            wget --progress=dot:giga --prefer-family=IPv4 --no-check-certificate -T 120 -t3 https://mirrors.aliyun.com/composer/composer.phar -O /usr/local/bin/composer
-            if [ $? -eq 0 ]; then
-                echo "Composer install successfully."
-                chmod +x /usr/local/bin/composer
-            else
-                echo "Composer install failed, try to from composer official website..."
-                curl -sS --connect-timeout 30 -m 60 https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-                if [ $? -eq 0 ]; then
-                    echo "Composer install successfully."
-                fi
-            fi
-        fi
-        #if [ "${country}" = "CN" ]; then
-            #composer config -g repo.packagist composer https://mirrors.aliyun.com/composer/
-        #fi
+(
+    [ "${CheckMirror}" != n ] || return 0
+    local PHP_Bin=/usr/local/php/bin/php PHP_ID Version File Work Output
+    local Enable_Download_Checksum=y Download_Insecure=n
+    [ ! -L /usr/local/bin/composer ] || { Echo_Red 'Refusing to replace a symlinked Composer.'; return 1; }
+    if [ -e /usr/local/bin/composer ]; then
+        [ -f /usr/local/bin/composer ] || return 1
+        echo 'Existing Composer preserved; update it separately after validation.'
+        return 0
     fi
-}
+    PHP_ID=$("$PHP_Bin" -n -r 'echo PHP_VERSION_ID;') || return 1
+    [[ "$PHP_ID" =~ ^[0-9]+$ ]] && [ "$PHP_ID" -ge 50300 ] || return 1
+    if [ "$PHP_ID" -ge 70205 ]; then Version=2.10.3; else Version=2.2.30; fi
+    File=composer-$Version.phar
+    Work=$(mktemp -d /usr/local/bin/.lnmp-composer.XXXXXX) || return 1
+    chmod 700 "$Work" || return 1
+    trap 'rm -rf -- "$Work"' EXIT
+    cd "$Work" || return 1
+    if [ -e "${cur_dir}/src/$File" ]; then
+        [ -f "${cur_dir}/src/$File" ] && [ ! -L "${cur_dir}/src/$File" ] || return 1
+        cp "${cur_dir}/src/$File" "$File" || return 1
+    fi
+    Download_Files "${Download_Mirror}/web/php/composer/$File" "$File" || return 1
+    Output=$(COMPOSER_HOME="$Work/home" COMPOSER_ALLOW_SUPERUSER=1 "$PHP_Bin" -n "$File" --version --no-ansi 2>&1) || return 1
+    [[ "$Output" = "Composer version $Version "* ]] || { Echo_Red 'Unexpected Composer version.'; return 1; }
+    chmod 755 "$File" || return 1
+    # GNU -T rejects concurrent directories and directory symlinks as targets.
+    ln -T -- "$File" /usr/local/bin/composer || return 1
+    Echo_Green "Composer $Version installed with fixed SHA256 verification."
+)
 
 PHP_Openssl3_Patch()
 {
@@ -363,7 +365,7 @@ Install_PHP_53()
     sed -i 's/magic_quotes_gpc =.*/;magic_quotes_gpc = On/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     if [ "${Is_ARM}" != "y" ]; then
@@ -402,7 +404,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -452,7 +454,7 @@ Install_PHP_54()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     if [ "${Is_ARM}" != "y" ]; then
@@ -491,7 +493,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -545,7 +547,7 @@ Install_PHP_55()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     if [ "${Is_ARM}" != "y" ]; then
@@ -584,7 +586,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -641,7 +643,7 @@ Install_PHP_56()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     if [ "${Is_ARM}" != "y" ]; then
@@ -680,7 +682,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -733,7 +735,7 @@ Install_PHP_7()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 7.0..."
@@ -753,7 +755,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -805,7 +807,7 @@ Install_PHP_71()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 7.1..."
@@ -825,7 +827,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -877,7 +879,7 @@ Install_PHP_72()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 7.2..."
@@ -897,7 +899,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -949,7 +951,7 @@ Install_PHP_73()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 7.3..."
@@ -969,7 +971,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1021,7 +1023,7 @@ Install_PHP_74()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 7.4..."
@@ -1041,7 +1043,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1093,7 +1095,7 @@ Install_PHP_80()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 8.0..."
@@ -1113,7 +1115,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1164,7 +1166,7 @@ Install_PHP_81()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 8.1..."
@@ -1184,7 +1186,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1235,7 +1237,7 @@ Install_PHP_82()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
     echo "Install ZendGuardLoader for PHP 8.2..."
@@ -1255,7 +1257,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1279,16 +1281,21 @@ fi
 
 Install_PHP_83()
 {
+    local Opcache_Option='--enable-opcache'
+    [[ "${Php_Ver}" != php-8.5.* ]] || Opcache_Option=''
     Install_Libzip
     Echo_Blue "[+] Installing ${Php_Ver}"
     Tar_Cd ${Php_Ver}.tar.bz2 ${Php_Ver}
-    if [ "${Stack}" = "lnmp" ]; then
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
-    else
-        ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} --enable-opcache --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
-    fi
+    (
+        Prepare_CentOS8_PHP_Compiler || exit 1
+        if [ "${Stack}" = "lnmp" ]; then
+            ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --enable-fpm --with-fpm-user=www --with-fpm-group=www --enable-mysqlnd --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} ${Opcache_Option} --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        else
+            ./configure --prefix=/usr/local/php --with-config-file-path=/usr/local/php/etc --with-config-file-scan-dir=/usr/local/php/conf.d --with-apxs2=/usr/local/apache/bin/apxs --with-mysqli=mysqlnd --with-pdo-mysql=mysqlnd --with-iconv=/usr/local --with-freetype=/usr/local/freetype --with-jpeg --with-zlib --enable-xml --disable-rpath --enable-bcmath --enable-shmop --enable-sysvsem ${with_curl} --enable-mbregex --enable-mbstring --enable-intl --enable-pcntl --enable-ftp --enable-gd ${with_openssl} --with-mhash --enable-pcntl --enable-sockets --with-zip --enable-soap --with-gettext ${with_fileinfo} ${Opcache_Option} --with-xsl --with-pear --with-webp ${PHP_Buildin_Option} ${PHP_Modules_Options}
+        fi
 
-    PHP_Make_Install
+        PHP_Make_Install
+    ) || return 1
 
     Ln_PHP_Bin
 
@@ -1306,10 +1313,10 @@ Install_PHP_83()
     sed -i 's/max_execution_time =.*/max_execution_time = 300/g' /usr/local/php/etc/php.ini
     sed -i 's/disable_functions =.*/disable_functions = passthru,exec,system,chroot,chgrp,chown,shell_exec,proc_open,proc_get_status,popen,ini_alter,ini_restore,dl,openlog,syslog,readlink,symlink,popepassthru,stream_socket_server/g' /usr/local/php/etc/php.ini
     Pear_Pecl_Set
-    Install_Composer
+    Install_Composer || exit 1
 
     cd ${cur_dir}/src
-    echo "Install ZendGuardLoader for PHP 8.3..."
+    echo "Install ZendGuardLoader for ${Php_Ver}..."
     echo "unavailable now."
 
 if [ "${Stack}" = "lnmp" ]; then
@@ -1326,7 +1333,7 @@ listen.backlog = -1
 listen.allowed_clients = 127.0.0.1
 listen.owner = www
 listen.group = www
-listen.mode = 0666
+listen.mode = 0660
 user = www
 group = www
 pm = dynamic
@@ -1346,6 +1353,20 @@ EOF
     \cp ${cur_dir}/init.d/php-fpm.service /etc/systemd/system/php-fpm.service
     chmod +x /etc/init.d/php-fpm
 fi
+}
+
+Install_PHP_84()
+{
+    Install_PHP_83 || return 1
+    if [ "${Enable_PHP_Imap}" = "y" ]; then
+        . "${cur_dir}/include/php_imap.sh"
+        Build_PHP_Imap /usr/local/php "${Php_Ver#php-}" || exit 1
+    fi
+}
+
+Install_PHP_85()
+{
+    Install_PHP_84 || return 1
 }
 
 LNMP_PHP_Opt()
@@ -1374,34 +1395,56 @@ LNMP_PHP_Opt()
 }
 
 Creat_PHP_Tools()
-{
-    echo "Create PHP Info Tool..."
-    cat >${Default_Website_Dir}/phpinfo.php<<eof
-<?php
-phpinfo();
-?>
-eof
-
-    echo "Copy PHP Prober..."
-    cd ${cur_dir}/src
-    tar zxf p.tar.gz
-    \cp p.php ${Default_Website_Dir}/p.php
-
-    \cp ${cur_dir}/conf/index.html ${Default_Website_Dir}/index.html
-    \cp ${cur_dir}/conf/lnmp.gif ${Default_Website_Dir}/lnmp.gif
-
-    if [ ${PHPSelect} -ge 4 ]; then
-        echo "Copy Opcache Control Panel..."
-        \cp ${cur_dir}/conf/ocp.php ${Default_Website_Dir}/ocp.php
+(
+    set -o pipefail
+    umask 077
+    local Source_Root=${cur_dir:-} Website=${Default_Website_Dir:-} Stage='' Parent Entry Listing Types
+    local PHP_Bin=/usr/local/php/bin/php
+    local Enable_Download_Checksum=y Download_Insecure=n
+    . "$Source_Root/include/upgrade_phpmyadmin.sh" || exit 1
+    while [[ "$Website" = */ && "$Website" != / ]]; do Website=${Website%/}; done
+    PMA_Safe_Path "$Website" && [ -d "$Website" ] && PMA_Safe_Path "$Source_Root" || exit 1
+    if [ -e "$Website/phpmyadmin" ] || [ -L "$Website/phpmyadmin" ]; then
+        Echo_Red 'Existing phpMyAdmin found; fresh installation will not delete or overwrite it.'; exit 1
     fi
-    echo "============================Install PHPMyAdmin================================="
-    [[ -d ${Default_Website_Dir}/phpmyadmin ]] && rm -rf ${Default_Website_Dir}/phpmyadmin
-    tar Jxf ${PhpMyAdmin_Ver}.tar.xz
-    mv ${PhpMyAdmin_Ver} ${Default_Website_Dir}/phpmyadmin
-    \cp ${cur_dir}/conf/config.inc.php ${Default_Website_Dir}/phpmyadmin/config.inc.php
-    sed -i 's/LNMPORG/LNMP.org_'`date +%s%N | head -c 13`'_VPSer.net/g' ${Default_Website_Dir}/phpmyadmin/config.inc.php
-    mkdir ${Default_Website_Dir}/phpmyadmin/{upload,save}
-    chmod 755 -R ${Default_Website_Dir}/phpmyadmin/
-    chown www:www -R ${Default_Website_Dir}/phpmyadmin/
-    echo "============================phpMyAdmin install completed======================="
-}
+    Parent=$(PMA_Staging_Parent "$Website") || exit 1
+    Stage=$(mktemp -d "$Parent/.lnmp-php-tools.XXXXXX") || exit 1
+    trap 'rm -rf -- "$Stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    chmod 700 "$Stage" && mkdir -p "$Stage/work/src" "$Stage/output" || exit 1
+    for Entry in index.html lnmp.gif; do
+        if [ ! -e "$Website/$Entry" ] && [ ! -L "$Website/$Entry" ]; then
+            PMA_Safe_Path "$Source_Root/conf/$Entry" && [ -f "$Source_Root/conf/$Entry" ] || exit 1
+            cp -- "$Source_Root/conf/$Entry" "$Stage/output/$Entry" || exit 1
+        fi
+    done
+    if [ "${Enable_Public_Diagnostics:-n}" = y ]; then
+        local cur_dir=$Stage/work
+        printf '%s  p.tar.gz\n' '0ac2e09beb62bd4e00be27c1286d0edcd40196bf893741c461eefa39c06117bb' > "$cur_dir/src/checksums.sha256" || exit 1
+        if [ -e "$Source_Root/src/p.tar.gz" ] || [ -L "$Source_Root/src/p.tar.gz" ]; then
+            PMA_Safe_Path "$Source_Root/src/p.tar.gz" && [ -f "$Source_Root/src/p.tar.gz" ] || exit 1
+            cp -- "$Source_Root/src/p.tar.gz" "$cur_dir/src/p.tar.gz" || exit 1
+        fi
+        cd "$cur_dir/src" || exit 1
+        Download_Files "${Download_Mirror:-https://soft.lnmp.com}/prober/p.tar.gz" p.tar.gz || exit 1
+        Listing=$(tar tf p.tar.gz) && Types=$(LC_ALL=C tar tvf p.tar.gz) || exit 1
+        [ "$Listing" = p.php ] && [[ "$Types" = -* ]] || { Echo_Red 'Unexpected public prober archive.'; exit 1; }
+        Tar_Cd p.tar.gz || exit 1
+        cp -- p.php "$Stage/output/p.php" || exit 1
+        printf '<?php\nphpinfo();\n' > "$Stage/output/phpinfo.php" || exit 1
+        PMA_Safe_Path "$Source_Root/conf/ocp.php" && [ -f "$Source_Root/conf/ocp.php" ] || exit 1
+        cp -- "$Source_Root/conf/ocp.php" "$Stage/output/ocp.php" || exit 1
+        cur_dir=$Source_Root
+    fi
+    # Reuse the same pinned, transactional installer, without a second keypress.
+    Upgrade_phpMyAdmin 5.2.3 --fresh || exit 1
+    for Entry in "$Stage/output/"*; do
+        [ -f "$Entry" ] || continue
+        chmod 644 "$Entry" || exit 1
+        if [ -e "$Website/${Entry##*/}" ] || [ -L "$Website/${Entry##*/}" ]; then continue; fi
+        # link(2) refuses existing files/directories instead of following a destination link.
+        "$PHP_Bin" -n -r 'exit(link($argv[1], $argv[2]) ? 0 : 1);' "$Entry" "$Website/${Entry##*/}" || exit 1
+    done
+    Echo_Green 'phpMyAdmin installed with a random cookie key; public diagnostics are opt-in.'
+)

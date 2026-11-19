@@ -2,16 +2,41 @@
 
 Backup_MySQL()
 {
+    [[ "${MySQL_Data_Dir}" = /* && "${MySQL_Data_Dir}" != *[[:space:]]* ]] || return 1
+    local Resolved_Data_Dir Runtime_Data_Dir
+    Resolved_Data_Dir=$(readlink -f "${MySQL_Data_Dir}") || return 1
+    case "$Resolved_Data_Dir" in
+        ''|/|/usr|/usr/local|/usr/local/mysql|/var|/var/lib|/etc|/home|/root|/tmp|/dev|/proc|/sys|/boot|/run|/opt|/srv|/mnt|/media)
+            Echo_Red "Refusing an unsafe MySQL data directory."
+            return 1 ;;
+    esac
+    [ -d "$Resolved_Data_Dir" ] || return 1
+    Runtime_Data_Dir=$(/usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" -Nse 'SELECT @@GLOBAL.datadir') || return 1
+    Runtime_Data_Dir=$(readlink -f "$Runtime_Data_Dir") || return 1
+    [ "$Resolved_Data_Dir" = "$Runtime_Data_Dir" ] || { Echo_Red "Configured and running MySQL data directories differ."; return 1; }
+    MySQL_Data_Dir=$Resolved_Data_Dir
     echo "Starting backup all databases..."
     echo "If the database is large, the backup time will be longer."
-    /usr/local/mysql/bin/mysqldump --defaults-file=~/.my.cnf --all-databases > /root/mysql_all_backup${Upgrade_Date}.sql
-    if [ $? -eq 0 ]; then
-        echo "MySQL databases backup successfully.";
-    else
-        echo "MySQL databases backup failed,Please backup databases manually!"
-        exit 1
+    [ ! -e "/usr/local/oldmysql${Upgrade_Date}" ] || return 1
+    [ ! -e "/usr/local/failedmysql${Upgrade_Date}" ] || return 1
+    [ ! -e "/root/mysql_all_backup${Upgrade_Date}.sql" ] || return 1
+    if [ "${MySQL_Data_Dir}" != "/usr/local/mysql/var" ]; then
+        [ ! -e "${MySQL_Data_Dir}${Upgrade_Date}" ] || return 1
+        [ ! -e "${MySQL_Data_Dir}.failed.${Upgrade_Date}" ] || return 1
     fi
-    lnmp stop
+    read -r MySQL_Old_Read_Only MySQL_Old_Super_Read_Only <<< "$(/usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" -Nse 'SELECT @@GLOBAL.read_only, @@GLOBAL.super_read_only')"
+    [[ "${MySQL_Old_Read_Only}" =~ ^[01]$ && "${MySQL_Old_Super_Read_Only}" =~ ^[01]$ ]] || return 1
+    MySQL_Read_Only_Changed=y
+    Do_Query "SET GLOBAL super_read_only=ON;" || return 1
+    (umask 077; /usr/local/mysql/bin/mysqldump --defaults-file="${MySQL_Client_Cnf}" --all-databases --routines --events --triggers --hex-blob --lock-all-tables > "/root/mysql_all_backup${Upgrade_Date}.sql.tmp") || return 1
+    [ -s "/root/mysql_all_backup${Upgrade_Date}.sql.tmp" ] || return 1
+    mv "/root/mysql_all_backup${Upgrade_Date}.sql.tmp" "/root/mysql_all_backup${Upgrade_Date}.sql" || return 1
+    MySQL_Upgrade_Active=y
+    /etc/init.d/mysql stop || return 1
+    if /usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" -Nse 'SELECT 1' >/dev/null 2>&1; then
+        Echo_Red "MySQL is still running; refusing to move the data directory."
+        return 1
+    fi
     mv /usr/local/mysql /usr/local/oldmysql${Upgrade_Date}
     mv /etc/init.d/mysql /usr/local/oldmysql${Upgrade_Date}/init.d.mysql.bak.${Upgrade_Date}
     mv /etc/my.cnf /usr/local/oldmysql${Upgrade_Date}/my.cnf.bak.${Upgrade_Date}
@@ -35,8 +60,8 @@ Upgrade_MySQL51()
     sed -i '/set -ex;/,/done/d' Makefile
     Make_Install
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
 cat > /etc/my.cnf<<EOF
 [client]
@@ -148,8 +173,8 @@ Upgrade_MySQL55()
         Make_Install
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
     cat > /etc/my.cnf<<EOF
 [client]
@@ -247,7 +272,7 @@ Upgrade_MySQL56()
     else
         Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Source code..."
         if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
+            Install_Openssl_Compat
             MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
         else
             MySQL_WITH_SSL=''
@@ -263,8 +288,8 @@ Upgrade_MySQL56()
         Make_Install
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
 cat > /etc/my.cnf<<EOF
 [client]
@@ -394,7 +419,7 @@ Upgrade_MySQL57()
     else
         Echo_Blue "Starting upgrade MySQL ${mysql_version} Using Source code..."
         if [ "${isOpenSSL3}" = "y" ]; then
-            Install_Openssl_New
+            Install_Openssl_Compat
             MySQL_WITH_SSL='-DWITH_SSL=/usr/local/openssl1.1.1'
         else
             MySQL_WITH_SSL=''
@@ -408,8 +433,8 @@ Upgrade_MySQL57()
         Make_Install
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
 cat > /etc/my.cnf<<EOF
 [client]
@@ -512,8 +537,8 @@ Upgrade_MySQL80()
         Make_Install
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
 cat > /etc/my.cnf<<EOF
 [client]
@@ -616,8 +641,8 @@ Upgrade_MySQL84()
         Make_Install
     fi
 
-    groupadd mysql
-    useradd -s /sbin/nologin -M -g mysql mysql
+    groupadd -f mysql
+    id mysql >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g mysql mysql
 
 cat > /etc/my.cnf<<EOF
 [client]
@@ -704,47 +729,92 @@ EOF
     ln -sf /usr/local/mysql/include/mysql /usr/include/mysql
 }
 
+Rollback_MySQL()
+{
+    if [ "${MySQL_Upgrade_Active}" = "y" ]; then
+        /etc/init.d/mysql stop 2>/dev/null
+        if [ -d "/usr/local/oldmysql${Upgrade_Date}" ]; then
+            [ ! -e /usr/local/mysql ] || mv /usr/local/mysql "/usr/local/failedmysql${Upgrade_Date}" || return 1
+            mv "/usr/local/oldmysql${Upgrade_Date}" /usr/local/mysql || return 1
+            [ ! -f "/usr/local/mysql/init.d.mysql.bak.${Upgrade_Date}" ] || cp -p "/usr/local/mysql/init.d.mysql.bak.${Upgrade_Date}" /etc/init.d/mysql
+            [ ! -f "/usr/local/mysql/my.cnf.bak.${Upgrade_Date}" ] || cp -p "/usr/local/mysql/my.cnf.bak.${Upgrade_Date}" /etc/my.cnf
+        fi
+        if [[ "${MySQL_Data_Dir}" != "/usr/local/mysql/var" && -d "${MySQL_Data_Dir}${Upgrade_Date}" ]]; then
+            [ ! -e "${MySQL_Data_Dir}" ] || mv "${MySQL_Data_Dir}" "${MySQL_Data_Dir}.failed.${Upgrade_Date}" || return 1
+            mv "${MySQL_Data_Dir}${Upgrade_Date}" "${MySQL_Data_Dir}" || return 1
+        fi
+        /etc/init.d/mysql start || return 1
+        Echo_Red "MySQL upgrade failed; the previous installation and data have been restored."
+    fi
+    if [ "${MySQL_Read_Only_Changed}" = "y" ]; then
+        Wait_MySQL_Ready || return 1
+        Do_Query "SET GLOBAL read_only=${MySQL_Old_Read_Only}; SET GLOBAL super_read_only=${MySQL_Old_Super_Read_Only};" || return 1
+    fi
+    rm -f "/root/mysql_all_backup${Upgrade_Date}.sql.tmp"
+}
+
+Wait_MySQL_Ready()
+{
+    local Attempt
+    for ((Attempt=0; Attempt<120; Attempt++)); do
+        if /usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" -Nse 'SELECT 1' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    Echo_Red "MySQL did not become ready within 120 seconds."
+    return 1
+}
+
 Restore_Start_MySQL()
 {
-    chgrp -R mysql /usr/local/mysql/.
-    \cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql
-    chmod 755 /etc/init.d/mysql
-
+    local Attempt Ready=n Root_Password
+    chgrp -R mysql /usr/local/mysql/. || return 1
+    cp /usr/local/mysql/support-files/mysql.server /etc/init.d/mysql || return 1
+    chmod 755 /etc/init.d/mysql || return 1
+    cp -p "/usr/local/oldmysql${Upgrade_Date}/my.cnf.bak.${Upgrade_Date}" /etc/my.cnf || return 1
     ldconfig
-
-    MySQL_Sec_Setting
-    /etc/init.d/mysql start
-
+    /etc/init.d/mysql start || return 1
+    for ((Attempt=0; Attempt<120; Attempt++)); do
+        if /usr/local/mysql/bin/mysql --defaults-file=/etc/my.cnf -u root --skip-password -Nse 'SELECT 1' >/dev/null 2>&1; then
+            Ready=y
+            break
+        fi
+        sleep 1
+    done
+    [ "${Ready}" = "y" ] || return 1
+    Root_Password=${DB_Root_Password//\\/\\\\}
+    Root_Password=${Root_Password//\'/\'\'}
+    /usr/local/mysql/bin/mysql --defaults-file=/etc/my.cnf -u root --skip-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${Root_Password}';" || return 1
     echo "Restore backup databases..."
-    /usr/local/mysql/bin/mysql --defaults-file=~/.my.cnf < /root/mysql_all_backup${Upgrade_Date}.sql
-    echo "Repair databases..."
-    MySQL_Ver_Com=$(${cur_dir}/include/version_compare 8.0.16 ${mysql_version})
-    if [ "${MySQL_Ver_Com}" != "1" ]; then
-        /etc/init.d/mysql stop
-        echo "Upgring MySQL..."
-        /usr/local/mysql/bin/mysqld --user=mysql --upgrade=FORCE &
-        echo "Waiting for upgrade to start..."
-        sleep 180
-        /usr/local/mysql/bin/mysqladmin --defaults-file=~/.my.cnf shutdown
-    else
-        /usr/local/mysql/bin/mysql_upgrade -u root -p${DB_Root_Password}
+    /usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" < "/root/mysql_all_backup${Upgrade_Date}.sql" || return 1
+    Wait_MySQL_Ready || return 1
+    local Actual_Version
+    Actual_Version=$(/usr/local/mysql/bin/mysql --defaults-file="${MySQL_Client_Cnf}" -Nse 'SELECT VERSION()') || return 1
+    [ "${Actual_Version%%-*}" = "${mysql_version}" ] || return 1
+    Do_Query "SET GLOBAL read_only=${MySQL_Old_Read_Only}; SET GLOBAL super_read_only=${MySQL_Old_Super_Read_Only};" || return 1
+    MySQL_Read_Only_Changed=n
+    MySQL_Upgrade_Active=n
+    Echo_Green "======== upgrade MySQL completed ======"
+}
+
+Validate_MySQL_Upgrade()
+{
+    if [[ ! "${mysql_version}" =~ ^8\.(0|4)\.[0-9]+$ ]]; then
+        Echo_Red "Automatic MySQL upgrades support only maintained 8.0/8.4 patch releases."
+        return 1
     fi
-
-    /etc/init.d/mysql stop
-    TempMycnf_Clean
-    cd ${cur_dir} && rm -rf ${cur_dir}/src/mysql-${mysql_version}
-
-    lnmp start
-    if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]]; then
-        Echo_Green "======== upgrade MySQL completed ======"
-    else
-        Echo_Red "======== upgrade MySQL failed ======"
-        Echo_Red "upgrade MySQL log: /root/upgrade_mysq${Upgrade_Date}.log"
-        echo "You upload upgrade_mysq${Upgrade_Date}.log to LNMP Forum for help."
+    if [ "${cur_mysql_version%.*}" != "${mysql_version%.*}" ]; then
+        Echo_Red "Cross-series database migration requires a separate tested migration plan."
+        return 1
+    fi
+    if [ "$("${cur_dir}/include/version_compare" "${cur_mysql_version}" "${mysql_version}")" != "-1" ]; then
+        Echo_Red "The target must be newer than the current MySQL version."
+        return 1
     fi
 }
 
-Upgrade_MySQL()
+Upgrade_MySQL_Transaction()
 {
     Check_DB
     if [ "${Is_MySQL}" = "n" ]; then
@@ -769,6 +839,7 @@ Upgrade_MySQL()
         echo "Error: The upgrade MYSQL Version is the same as the old Version!!"
         exit 1
     fi
+    Validate_MySQL_Upgrade || return 1
 
     if [[ "${DB_ARCH}" = "x86_64" || "${DB_ARCH}" = "i686" ]] && echo "${mysql_version}" | grep -Eqi '^5.[5-7].';then
         read -p "Using Generic Binaries [y/n]: " Bin
@@ -863,22 +934,17 @@ Upgrade_MySQL()
             mysql_src="mysql-${mysql_version}.tar.gz"
         fi
     fi
-    if [ -s "${mysql_src}" ]; then
-        echo "${mysql_src} [found]"
-    else
-        Download_Files http://cdn.mysql.com/Downloads/MySQL-${mysql_short_version}/${mysql_src} ${mysql_src}
-        if [ $? -eq 0 ]; then
+        if Download_Files https://cdn.mysql.com/Downloads/MySQL-${mysql_short_version}/${mysql_src} ${mysql_src}; then
             echo "Download ${mysql_src} successfully!"
         else
-            Download_Files https://cdn.mysql.com/archives/mysql-${mysql_short_version}/${mysql_src} ${mysql_src}
-            if [ $? -ne 0 ]; then
+            if ! Download_Files https://cdn.mysql.com/archives/mysql-${mysql_short_version}/${mysql_src} ${mysql_src}; then
                 echo "You enter MySQL Version was: ${mysql_version}"
                 Echo_Red "Error! You entered a wrong version number, please check!"
                 sleep 5
                 exit 1
             fi
         fi
-    fi
+    tar tf "${mysql_src}" >/dev/null || return 1
     Check_Openssl
     if [ "${Bin}" != "y" ]; then
         Echo_Blue "Install dependent packages..."
@@ -902,4 +968,11 @@ Upgrade_MySQL()
         Upgrade_MySQL84
     fi
     Restore_Start_MySQL
+}
+
+Upgrade_MySQL()
+{
+    MySQL_Upgrade_Active=n
+    MySQL_Read_Only_Changed=n
+    Run_Upgrade_Guarded Upgrade_MySQL_Transaction Rollback_MySQL
 }

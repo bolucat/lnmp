@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # Check if user is root
@@ -15,9 +16,10 @@ else
     Stack=$1
 fi
 
-LNMP_Ver='2.1'
+. include/release.sh
 . lnmp.conf
 . include/main.sh
+. include/telemetry.sh
 . include/init.sh
 . include/mysql.sh
 . include/mariadb.sh
@@ -27,6 +29,7 @@ LNMP_Ver='2.1'
 . include/end.sh
 . include/only.sh
 . include/multiplephp.sh
+trap TempMycnf_Clean EXIT
 
 Get_Dist_Name
 
@@ -56,41 +59,44 @@ echo "+------------------------------------------------------------------------+
 
 Init_Install()
 {
+    Check_Fresh_Install_Targets || exit 1
     Press_Install
+    Telemetry_Begin
     Print_APP_Ver
-    Get_Dist_Version
+    Get_Dist_Version || exit 1
+    Prepare_CentOS8_Bootstrap || exit 1
     Print_Sys_Info
+    Check_Download || exit 1
     Check_Hosts
     Check_CMPT
     if [ "${CheckMirror}" != "n" ]; then
-        Modify_Source
-        Check_Mirror
+        Modify_Source || exit 1
+        Check_Mirror || exit 1
     fi
     Add_Swap
     Set_Timezone
     if [ "$PM" = "yum" ]; then
         CentOS_InstallNTP
-        CentOS_RemoveAMP
         CentOS_Dependent
     elif [ "$PM" = "apt" ]; then
         Deb_InstallNTP
         Xen_Hwcap_Setting
-        Deb_RemoveAMP
         Deb_Dependent
     fi
-    Disable_Selinux
-    Check_Download
-    Install_Libiconv
-    Install_Libmcrypt
-    Install_Mhash
-    Install_Mcrypt
-    Install_Freetype
-    Install_Pcre
-    Install_Icu4c
+    Telemetry_Retry_Started
+    Install_Libiconv || exit 1
+    if [[ "${PHPSelect}" =~ ^([1-9]|10)$ ]]; then
+        Install_Libmcrypt
+        Install_Mhash
+        Install_Mcrypt
+    fi
+    Install_Freetype || exit 1
+    Install_Pcre || exit 1
+    Install_Icu4c || exit 1
     if [ "${SelectMalloc}" = "2" ]; then
-        Install_Jemalloc
+        Install_Jemalloc || exit 1
     elif [ "${SelectMalloc}" = "3" ]; then
-        Install_TCMalloc
+        Install_TCMalloc || exit 1
     fi
     if [ "$PM" = "yum" ]; then
         CentOS_Lib_Opt
@@ -98,109 +104,117 @@ Init_Install()
         Deb_Lib_Opt
     fi
     if [ "${DBSelect}" = "1" ]; then
-        Install_MySQL_51
+        Install_MySQL_51 || exit 1
     elif [ "${DBSelect}" = "2" ]; then
-        Install_MySQL_55
+        Install_MySQL_55 || exit 1
     elif [ "${DBSelect}" = "3" ]; then
-        Install_MySQL_56
+        Install_MySQL_56 || exit 1
     elif [ "${DBSelect}" = "4" ]; then
-        Install_MySQL_57
+        Install_MySQL_57 || exit 1
     elif [ "${DBSelect}" = "5" ]; then
-        Install_MySQL_80
+        Install_MySQL_80 || exit 1
     elif [ "${DBSelect}" = "6" ]; then
-        Install_MariaDB_5
+        Install_MariaDB_5 || exit 1
     elif [ "${DBSelect}" = "7" ]; then
-        Install_MariaDB_103
+        Install_MariaDB_104 || exit 1
     elif [ "${DBSelect}" = "8" ]; then
-        Install_MariaDB_104
+        Install_MariaDB_105 || exit 1
     elif [ "${DBSelect}" = "9" ]; then
-        Install_MariaDB_105
+        Install_MariaDB_106 || exit 1
     elif [ "${DBSelect}" = "10" ]; then
-        Install_MariaDB_106
+        Install_MariaDB_1011 || exit 1
     elif [ "${DBSelect}" = "11" ]; then
-        Install_MySQL_84
+        Install_MySQL_84 || exit 1
+    elif [ "${DBSelect}" = "12" ]; then
+        Install_MariaDB_114 || exit 1
+    elif [ "${DBSelect}" = "13" ]; then
+        Install_MariaDB_118 || exit 1
     fi
     TempMycnf_Clean
     Clean_DB_Src_Dir
-    Check_PHP_Option
+    Check_PHP_Option || exit 1
 }
 
 Install_PHP()
 {
     if [ "${PHPSelect}" = "1" ]; then
-        Install_PHP_52
+        Install_PHP_52 || exit 1
     elif [ "${PHPSelect}" = "2" ]; then
-        Install_PHP_53
+        Install_PHP_53 || exit 1
     elif [ "${PHPSelect}" = "3" ]; then
-        Install_PHP_54
+        Install_PHP_54 || exit 1
     elif [ "${PHPSelect}" = "4" ]; then
-        Install_PHP_55
+        Install_PHP_55 || exit 1
     elif [ "${PHPSelect}" = "5" ]; then
-        Install_PHP_56
+        Install_PHP_56 || exit 1
     elif [ "${PHPSelect}" = "6" ]; then
-        Install_PHP_7
+        Install_PHP_7 || exit 1
     elif [ "${PHPSelect}" = "7" ]; then
-        Install_PHP_71
+        Install_PHP_71 || exit 1
     elif [ "${PHPSelect}" = "8" ]; then
-        Install_PHP_72
+        Install_PHP_72 || exit 1
     elif [ "${PHPSelect}" = "9" ]; then
-        Install_PHP_73
+        Install_PHP_73 || exit 1
     elif [ "${PHPSelect}" = "10" ]; then
-        Install_PHP_74
+        Install_PHP_74 || exit 1
     elif [ "${PHPSelect}" = "11" ]; then
-        Install_PHP_80
+        Install_PHP_80 || exit 1
     elif [ "${PHPSelect}" = "12" ]; then
-        Install_PHP_81
+        Install_PHP_81 || exit 1
     elif [ "${PHPSelect}" = "13" ]; then
-        Install_PHP_82
+        Install_PHP_82 || exit 1
     elif [ "${PHPSelect}" = "14" ]; then
-        Install_PHP_83
+        Install_PHP_83 || exit 1
+    elif [ "${PHPSelect}" = "15" ]; then
+        Install_PHP_84 || exit 1
+    elif [ "${PHPSelect}" = "16" ]; then
+        Install_PHP_85 || exit 1
     fi
     Clean_PHP_Src_Dir
 }
 
 LNMP_Stack()
 {
-    Init_Install
-    Install_PHP
-    LNMP_PHP_Opt
-    Install_Nginx
-    Creat_PHP_Tools
+    Init_Install || exit 1
+    Install_PHP || exit 1
+    LNMP_PHP_Opt || exit 1
+    Install_Nginx || exit 1
+    Creat_PHP_Tools || exit 1
     Add_Iptables_Rules
-    Add_LNMP_Startup
+    Add_LNMP_Startup || exit 1
     Check_LNMP_Install
 }
 
 LNMPA_Stack()
 {
     Apache_Selection
-    Init_Install
+    Init_Install || exit 1
     if [ "${ApacheSelect}" = "1" ]; then
-        Install_Apache_22
+        Install_Apache_22 || exit 1
     else
-        Install_Apache_24
+        Install_Apache_24 || exit 1
     fi
-    Install_PHP
-    Install_Nginx
-    Creat_PHP_Tools
+    Install_PHP || exit 1
+    Install_Nginx || exit 1
+    Creat_PHP_Tools || exit 1
     Add_Iptables_Rules
-    Add_LNMPA_Startup
+    Add_LNMPA_Startup || exit 1
     Check_LNMPA_Install
 }
 
 LAMP_Stack()
 {
     Apache_Selection
-    Init_Install
+    Init_Install || exit 1
     if [ "${ApacheSelect}" = "1" ]; then
-        Install_Apache_22
+        Install_Apache_22 || exit 1
     else
-        Install_Apache_24
+        Install_Apache_24 || exit 1
     fi
-    Install_PHP
-    Creat_PHP_Tools
+    Install_PHP || exit 1
+    Creat_PHP_Tools || exit 1
     Add_Iptables_Rules
-    Add_LAMP_Startup
+    Add_LAMP_Startup || exit 1
     Check_LAMP_Install
 }
 

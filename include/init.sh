@@ -157,6 +157,9 @@ RHEL_Modify_Source()
         elif echo "${RHEL_Version}" | grep -Eqi "^9"; then
             [[ -s /etc/yum.repos.d/Centos-9.repo ]] && rm -f /etc/yum.repos.d/Centos-9.repo
             \cp ${cur_dir}/conf/rhel-9.repo /etc/yum.repos.d/Centos-9.repo
+        elif echo "${RHEL_Version}" | grep -Eqi "^10"; then
+            [[ -s /etc/yum.repos.d/Centos-10.repo ]] && rm -f /etc/yum.repos.d/Centos-10.repo
+            \cp ${cur_dir}/conf/rhel-10.repo /etc/yum.repos.d/Centos-10.repo
         fi
         yum clean all
         yum makecache
@@ -226,6 +229,10 @@ Ubuntu_Modify_Source()
         CodeName='lunar'
     elif grep -Eqi "23.10" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^23.10'; then
         Ubuntu_Deadline mantic
+    elif grep -Eqi "24.10" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^24.10'; then
+        Ubuntu_Deadline oracular
+    elif grep -Eqi "25.04" /etc/*-release || echo "${Ubuntu_Version}" | grep -Eqi '^25.04'; then
+        Ubuntu_Deadline plucky
     fi
     if [ "${CodeName}" != "" ]; then
         \cp /etc/apt/sources.list /etc/apt/sources.list.$(date +"%Y%m%d")
@@ -259,6 +266,8 @@ Ubuntu_Deadline()
     xenial_deadline=`date -d "2026-4-30 00:00:00" +%s`
     bionic_deadline=`date -d "2028-7-30 00:00:00" +%s`
     mantic_deadline=`date -d "2024-7-30 00:00:00" +%s`
+    oracular_deadline=`date -d "2025-7-10 00:00:00" +%s`
+    plucky_deadline=`date -d "2026-1-15 00:00:00" +%s`
     cur_time=`date  +%s`
     case "$1" in
         trusty)
@@ -285,6 +294,18 @@ Ubuntu_Deadline()
                 Check_Old_Releases_URL mantic
             fi
             ;;
+        oracular)
+            if [ ${cur_time} -gt ${oracular_deadline} ]; then
+                echo "${cur_time} > ${oracular_deadline}"
+                Check_Old_Releases_URL oracular
+            fi
+            ;;
+        plucky)
+            if [ ${cur_time} -gt ${plucky_deadline} ]; then
+                echo "${cur_time} > ${plucky_deadline}"
+                Check_Old_Releases_URL plucky
+            fi
+            ;;
     esac
 }
 
@@ -300,14 +321,58 @@ CentOS6_Modify_Source()
 
 CentOS8_Modify_Source()
 {
-    if echo "${CentOS_Version}" | grep -Eqi "^8" && [ "${isCentosStream}" != "y" ]; then
-        Echo_Yellow "CentOS 8 is now end of life, use vault repository."
-        if [ ! -s /etc/yum.repos.d/CentOS8-vault.repo ]; then
-            mkdir /etc/yum.repos.d/backup
-            mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/backup/
-            \cp ${cur_dir}/conf/CentOS8-vault.repo /etc/yum.repos.d/CentOS8-vault.repo
+    local Template Target Repo Name Backup='' Temporary Source_Digest Target_Digest=''
+    [[ "${CentOS_Version}" = 8 || "${CentOS_Version}" = 8.* ]] || return 0
+    Template=CentOS8-vault.repo
+    [ "${isCentosStream}" != y ] || Template=CentOSStream8-vault.repo
+    Target="/etc/yum.repos.d/$Template"
+    [ -s "${cur_dir}/conf/$Template" ] || { Echo_Red "Missing CentOS 8 vault template: $Template"; return 1; }
+    Source_Digest=$(sha256sum < "${cur_dir}/conf/$Template") || return 1
+    if [ -f "$Target" ]; then
+        Target_Digest=$(sha256sum < "$Target") || return 1
+    fi
+    Echo_Yellow 'CentOS 8 is end of life; using signed packages from its HTTPS archive.'
+    mkdir -p /etc/yum.repos.d || return 1
+    for Repo in /etc/yum.repos.d/CentOS*.repo; do
+        [ -e "$Repo" ] || [ -L "$Repo" ] || continue
+        [ "$Repo" != "$Target" ] || continue
+        Name=${Repo##*/}
+        case "$Name" in
+            CentOS-Base.repo|CentOS-AppStream.repo|CentOS-Extras.repo|CentOS-PowerTools.repo|CentOS-centosplus.repo|CentOS-Media.repo|CentOS-CR.repo|CentOS-Debuginfo.repo|CentOS-fasttrack.repo|CentOS-Sources.repo|CentOS-Vault.repo|CentOS-Linux-*.repo|CentOS-Stream-*.repo|CentOS8-vault.repo|CentOSStream8-vault.repo) ;;
+            *) continue ;;
+        esac
+        if [ -z "$Backup" ]; then
+            Backup=$(mktemp -d /etc/yum.repos.d/lnmp-centos8.XXXXXX) || return 1
+        fi
+        mv -- "$Repo" "$Backup/" || return 1
+    done
+    if [ "$Source_Digest" != "$Target_Digest" ]; then
+        if [ -e "$Target" ] || [ -L "$Target" ]; then
+            if [ -z "$Backup" ]; then
+                Backup=$(mktemp -d /etc/yum.repos.d/lnmp-centos8.XXXXXX) || return 1
+            fi
+            cp -Pp -- "$Target" "$Backup/" || return 1
+        fi
+        Temporary=$(mktemp /etc/yum.repos.d/.lnmp-vault.XXXXXX) || return 1
+        if ! cp "${cur_dir}/conf/$Template" "$Temporary" || ! chmod 644 "$Temporary" || ! mv -f -- "$Temporary" "$Target"; then
+            rm -f -- "$Temporary"
+            return 1
         fi
     fi
+    [ -z "$Backup" ] || Echo_Blue "Previous CentOS repositories retained in $Backup"
+    return 0
+}
+
+Prepare_CentOS8_Bootstrap()
+{
+    local Manager=yum Curl_Package=curl
+    [ "${DISTRO}" = CentOS ] || return 0
+    [[ "${CentOS_Version}" = 8 || "${CentOS_Version}" = 8.* ]] || return 0
+    [ "${CheckMirror}" != n ] || return 0
+    CentOS8_Modify_Source || return 1
+    command -v dnf >/dev/null 2>&1 && Manager=dnf
+    rpm -q curl-minimal >/dev/null 2>&1 && Curl_Package=curl-minimal
+    "$Manager" install -y wget "$Curl_Package" ca-certificates || return 1
 }
 
 Modify_Source()
@@ -316,8 +381,8 @@ Modify_Source()
         if subscription-manager status; then
             Echo_Blue "RHEL subscription exists on the system, skip setting up third-party sources."
             Get_RHEL_Version
-            if echo "${RHEL_Version}" | grep -Eqi "^[89]"; then
-                subscription-manager repos --enable codeready-builder-for-rhel-${RHEL_Version}-${DB_ARCH}-rpms
+            if echo "${RHEL_Version}" | grep -Eqi "^(8|9|10)"; then
+                subscription-manager repos --enable codeready-builder-for-rhel-${RHEL_Ver}-${DB_ARCH}-rpms
             fi
         else
             RHEL_Modify_Source
@@ -344,7 +409,7 @@ Check_Codeready()
     [ -z "${repo_id}" ] && repo_id="ol8_codeready_builder"
 }
 
-CentOS_Dependent()
+CentOS_Legacy_Dependent()
 {
     if [ -s /etc/yum.conf ]; then
         \cp /etc/yum.conf /etc/yum.conf.lnmp
@@ -369,7 +434,7 @@ CentOS_Dependent()
         dnf install gcc-toolset-10 -y
     fi
 
-    if echo "${CentOS_Version}" | grep -Eqi "^9"; then
+    if echo "${CentOS_Version}" | grep -Eqi "^(9|10)"; then
         crb_source_check=$(yum repolist all | grep -E '^crb' | awk '{print $1}')
 
         if [[ ! -n "$crb_source_check" ]]; then
@@ -384,7 +449,7 @@ gpgkey=https://mirrors.ustc.edu.cn/centos-stream/RPM-GPG-KEY-CentOS-Official
 EOF
         fi
     fi
-    if echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9"; then
+    if echo "${CentOS_Version}" | grep -Eqi "^(9|10)" || echo "${RHEL_Version}" | grep -Eqi "^10" || echo "${Alma_Version}" | grep -Eqi "^(9|10)" || echo "${Rocky_Version}" | grep -Eqi "^(9|10)"; then
         for cs9packages in oniguruma-devel libzip-devel libtirpc-devel libxcrypt-compat;
         do dnf --enablerepo=crb install ${cs9packages} -y; done
         if [[ "${Bin}" != "y" && "${DBSelect}" = "5" ]]; then
@@ -427,7 +492,7 @@ EOF
         fi
     fi
 
-    if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^9" || echo "${Alma_Version}" | grep -Eqi "^9" || echo "${Rocky_Version}" | grep -Eqi "^9" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^9"; then
+    if [ "${DISTRO}" = "Fedora" ] || echo "${CentOS_Version}" | grep -Eqi "^(9|10)" || echo "${RHEL_Version}" | grep -Eqi "^10" || echo "${Alma_Version}" | grep -Eqi "^(9|10)" || echo "${Rocky_Version}" | grep -Eqi "^(9|10)" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^(9|10)"; then
         dnf install chkconfig -y
     fi
 
@@ -445,95 +510,188 @@ EOF
     fi
 }
 
+Install_RPM_Build_Dependencies()
+{
+    local Manager=yum Repo Curl_Package=curl
+    local Repo_Options=() Extra_Packages=()
+    command -v dnf >/dev/null 2>&1 && Manager=dnf
+    rpm -q curl-minimal >/dev/null 2>&1 && Curl_Package=curl-minimal
+    Repo=$("$Manager" repolist all 2>/dev/null | awk 'tolower($1) ~ /(^crb$|^powertools$|codeready)/ {print $1; exit}')
+    [ -z "$Repo" ] || Repo_Options=("--enablerepo=$Repo")
+    if [ "${DISTRO}" = CentOS ] && [[ "${CentOS_Version}" = 8 || "${CentOS_Version}" = 8.* ]]; then
+        Extra_Packages=(libarchive rpcgen)
+        if { [ "${DBSelect}" = 11 ] && [ "${Bin}" != y ]; } || PHP_Uses_CentOS8_Toolset; then
+            Extra_Packages+=(gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ gcc-toolset-10-binutils)
+        fi
+    fi
+    "$Manager" "${Repo_Options[@]}" install -y make cmake gcc gcc-c++ autoconf automake bison flex file libtool patch wget "$Curl_Package" ca-certificates crontabs tar bzip2 xz unzip git pkgconfig pcre2-devel openssl-devel zlib-devel bzip2-devel libjpeg-turbo-devel libpng-devel freetype-devel libxml2-devel libcurl-devel libzip-devel libicu-devel libxslt-devel sqlite-devel oniguruma-devel ncurses-devel numactl-devel libaio-devel libtirpc-devel cyrus-sasl-devel c-ares-devel libwebp-devel libxcrypt-devel lsof psmisc iproute initscripts perl perl-IPC-Cmd "${Extra_Packages[@]}" || return 1
+}
+
+CentOS_Dependent()
+{
+    if [[ "${PHPSelect}" =~ ^1[1-6]$ ]]; then
+        Install_RPM_Build_Dependencies || exit 1
+    else
+        CentOS_Legacy_Dependent
+    fi
+}
+
+PHP_Uses_CentOS8_Toolset()
+{
+    local Target_PHP=${php_version:-${Php_Ver#php-}}
+    [ "${DISTRO}" = CentOS ] || return 1
+    [[ "${CentOS_Version}" = 8 || "${CentOS_Version}" = 8.* ]] || return 1
+    if [ -n "$Target_PHP" ]; then
+        [[ "$Target_PHP" =~ ^8\.[3-5](\.|$) ]]
+    else
+        [[ "${PHPSelect}" =~ ^(14|15|16)$ ]]
+    fi
+}
+
+Prepare_CentOS8_PHP_Compiler()
+{
+    local Prefix=/opt/rh/gcc-toolset-10 Version
+    PHP_Uses_CentOS8_Toolset || return 0
+    [ -z "${CC:-}" ] && [ -z "${CXX:-}" ] || return 0
+    if [ ! -x "$Prefix/root/usr/bin/gcc" ] || [ ! -x "$Prefix/root/usr/bin/g++" ] || [ ! -x "$Prefix/root/usr/bin/ld" ] || [ ! -s "$Prefix/enable" ]; then
+        Echo_Red 'PHP 8.3-8.5 on CentOS 8 requires gcc-toolset-10 compiler and binutils packages.'
+        return 1
+    fi
+    . "$Prefix/enable" || return 1
+    Version=$("$Prefix/root/usr/bin/gcc" -dumpversion) || return 1
+    [[ "${Version%%.*}" =~ ^[0-9]+$ ]] && [ "${Version%%.*}" -ge 10 ] || return 1
+    export CC="$Prefix/root/usr/bin/gcc" CXX="$Prefix/root/usr/bin/g++"
+    Echo_Blue "Using CentOS 8 PHP compiler: $CC ($Version), with GCC Toolset binutils"
+}
+
+Install_Debian_Build_Dependencies()
+{
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y || apt-get update --allow-releaseinfo-change -y || return 1
+    apt-get --no-install-recommends install -y build-essential cmake autoconf automake re2c wget curl ca-certificates cron bzip2 xz-utils gzip tar unzip patch git pkg-config libpcre2-dev bison flex file libtool libzip-dev libbz2-dev libncurses-dev libevent-dev libssl-dev libsasl2-dev libltdl-dev zlib1g-dev libglib2.0-dev libjpeg-dev libpng-dev libkrb5-dev libcurl4-openssl-dev libpq-dev gettext libxml2-dev libcap-dev libc-ares-dev libicu-dev libxslt1-dev libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof libnuma-dev libwebp-dev libgnutls28-dev iproute2 psmisc || return 1
+}
+
 Deb_Dependent()
 {
-    Echo_Blue "[+] Apt-get installing dependent packages..."
-    apt-get update -y
-    [[ $? -ne 0 ]] && apt-get update --allow-releaseinfo-change -y
-    apt-get autoremove -y
-    apt-get -fy install
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get --no-install-recommends install -y build-essential gcc g++ make
-    for packages in debian-keyring debian-archive-keyring build-essential gcc g++ make cmake autoconf automake re2c wget cron bzip2 libzip-dev libc6-dev bison file rcconf flex bison m4 gawk less cpp binutils diffutils unzip tar bzip2 libbz2-dev libncurses5 libncurses5-dev libtool libevent-dev openssl libssl-dev zlibc libsasl2-dev libltdl3-dev libltdl-dev zlib1g zlib1g-dev libbz2-1.0 libbz2-dev libglib2.0-0 libglib2.0-dev libpng3 libjpeg-dev libpng-dev libpng12-0 libpng12-dev libkrb5-dev curl libcurl3-gnutls libcurl4-gnutls-dev libcurl4-openssl-dev libpcre3-dev libpq-dev libpq5 gettext libpng12-dev libxml2-dev libcap-dev ca-certificates libc-client2007e-dev psmisc patch git libc-ares-dev libicu-dev e2fsprogs libxslt1.1 libxslt1-dev libc-client-dev xz-utils libexpat1-dev libaio-dev libtirpc-dev libsqlite3-dev libonig-dev lsof pkg-config libtinfo-dev libnuma-dev libwebp-dev gnutls-dev iproute2 xz-utils gzip;
-    do apt-get --no-install-recommends install -y $packages; done
+    Install_Debian_Build_Dependencies || exit 1
 }
 
 Check_Download()
 {
     Echo_Blue "[+] Downloading files..."
     cd ${cur_dir}/src
-    Download_Files ${Download_Mirror}/web/libiconv/${Libiconv_Ver}.tar.gz ${Libiconv_Ver}.tar.gz
-    Download_Files ${Download_Mirror}/web/libmcrypt/${LibMcrypt_Ver}.tar.gz ${LibMcrypt_Ver}.tar.gz
-    Download_Files ${Download_Mirror}/web/mcrypt/${Mcypt_Ver}.tar.gz ${Mcypt_Ver}.tar.gz
-    Download_Files ${Download_Mirror}/web/mhash/${Mhash_Ver}.tar.bz2 ${Mhash_Ver}.tar.bz2
+    Download_Files ${Download_Mirror}/web/libiconv/${Libiconv_Ver}.tar.gz ${Libiconv_Ver}.tar.gz || return 1
+    if [[ "${PHPSelect}" =~ ^([1-9]|10)$ ]]; then
+        Download_Files ${Download_Mirror}/web/libmcrypt/${LibMcrypt_Ver}.tar.gz ${LibMcrypt_Ver}.tar.gz || return 1
+        Download_Files ${Download_Mirror}/web/mcrypt/${Mcypt_Ver}.tar.gz ${Mcypt_Ver}.tar.gz || return 1
+        Download_Files ${Download_Mirror}/web/mhash/${Mhash_Ver}.tar.bz2 ${Mhash_Ver}.tar.bz2 || return 1
+    fi
     if [ "${SelectMalloc}" = "2" ]; then
-        Download_Files ${Download_Mirror}/lib/jemalloc/${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}.tar.bz2
+        Download_Files ${Download_Mirror}/lib/jemalloc/${Jemalloc_Ver}.tar.bz2 ${Jemalloc_Ver}.tar.bz2 || return 1
     elif [ "${SelectMalloc}" = "3" ]; then
-        Download_Files ${Download_Mirror}/lib/tcmalloc/${TCMalloc_Ver}.tar.gz ${TCMalloc_Ver}.tar.gz
-        Download_Files ${Download_Mirror}/lib/libunwind/${Libunwind_Ver}.tar.gz ${Libunwind_Ver}.tar.gz
+        Download_Files ${Download_Mirror}/lib/tcmalloc/${TCMalloc_Ver}.tar.gz ${TCMalloc_Ver}.tar.gz || return 1
+        Download_Files ${Download_Mirror}/lib/libunwind/${Libunwind_Ver}.tar.gz ${Libunwind_Ver}.tar.gz || return 1
     fi
     if [ "${Stack}" != "lamp" ]; then
-        Download_Files ${Download_Mirror}/web/nginx/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz
+        Download_Files ${Download_Mirror}/web/nginx/${Nginx_Ver}.tar.gz ${Nginx_Ver}.tar.gz || return 1
     fi
-    if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    if [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
         if [[ "${Bin}" = "y" && "${DBSelect}" =~ ^[2-4]$ ]]; then
             Mysql_Ver_Short=$(echo ${Mysql_Ver} | sed 's/mysql-//' | cut -d. -f1-2)
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz
+            if ! Download_Files https://cdn.mysql.com/Downloads/MySQL-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz; then
+                Download_Files https://cdn.mysql.com/archives/mysql-${Mysql_Ver_Short}/${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz ${Mysql_Ver}-linux-glibc2.12-${DB_ARCH}.tar.gz || return 1
             fi
         elif [[ "${Bin}" = "y" && "${DBSelect}" = "5" ]]; then
             [[ "${DB_ARCH}" = "aarch64" ]] && mysql8_glibc_ver="2.17" || mysql8_glibc_ver="2.12"
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz
+            if ! Download_Files https://cdn.mysql.com/Downloads/MySQL-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz; then
+                Download_Files https://cdn.mysql.com/archives/mysql-8.0/${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc${mysql8_glibc_ver}-${DB_ARCH}.tar.xz || return 1
             fi
         elif [[ "${Bin}" = "y" && "${DBSelect}" = "11" ]]; then
-            Download_Files https://cdn.mysql.com/Downloads/MySQL-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
-            if [ $? -ne 0 ]; then
-                Download_Files https://cdn.mysql.com/archives/mysql-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz
+            if ! Download_Files https://cdn.mysql.com/Downloads/MySQL-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz; then
+                Download_Files https://cdn.mysql.com/archives/mysql-8.4/${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz ${Mysql_Ver}-linux-glibc2.17-${DB_ARCH}.tar.xz || return 1
             fi
         else
-            Download_Files ${Download_Mirror}/datebase/mysql/${Mysql_Ver}.tar.gz ${Mysql_Ver}.tar.gz
+            Download_Files ${Download_Mirror}/datebase/mysql/${Mysql_Ver}.tar.gz ${Mysql_Ver}.tar.gz || return 1
         fi
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
         Mariadb_Version=$(echo ${Mariadb_Ver} | cut -d- -f2)
         if [ "${Bin}" = "y" ]; then
-            MariaDB_FileName="${Mariadb_Ver}-linux-systemd-${DB_ARCH}"
+            Download_Files https://downloads.mariadb.org/rest-api/mariadb/${Mariadb_Version}/${Mariadb_Ver}-linux-systemd-${DB_ARCH}.tar.gz ${Mariadb_Ver}-linux-systemd-${DB_ARCH}.tar.gz || return 1
         else
-            MariaDB_FileName="${Mariadb_Ver}"
+            Download_Files https://downloads.mariadb.org/rest-api/mariadb/${Mariadb_Version}/${Mariadb_Ver}.tar.gz ${Mariadb_Ver}.tar.gz || return 1
         fi
-        Download_Files https://downloads.mariadb.org/rest-api/mariadb/${Mariadb_Version}/${MariaDB_FileName}.tar.gz ${MariaDB_FileName}.tar.gz
     fi
-    Download_Files ${Download_Mirror}/web/php/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2
+    Download_Files ${Download_Mirror}/web/php/${Php_Ver}.tar.bz2 ${Php_Ver}.tar.bz2 || return 1
     if [ ${PHPSelect} = "1" ]; then
-        Download_Files ${Download_Mirror}/web/phpfpm/${Php_Ver}-fpm-0.5.14.diff.gz ${Php_Ver}-fpm-0.5.14.diff.gz
+        Download_Files ${Download_Mirror}/web/phpfpm/${Php_Ver}-fpm-0.5.14.diff.gz ${Php_Ver}-fpm-0.5.14.diff.gz || return 1
     fi
-    Download_Files ${Download_Mirror}/datebase/phpmyadmin/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz
-    Download_Files ${Download_Mirror}/prober/p.tar.gz p.tar.gz
+    Download_Files ${Download_Mirror}/datebase/phpmyadmin/${PhpMyAdmin_Ver}.tar.xz ${PhpMyAdmin_Ver}.tar.xz || return 1
+    Download_Files ${Download_Mirror}/prober/p.tar.gz p.tar.gz || return 1
     if [ "${Stack}" != "lnmp" ]; then
-        Download_Files ${Download_Mirror}/web/apache/${Apache_Ver}.tar.bz2 ${Apache_Ver}.tar.bz2
-        Download_Files ${Download_Mirror}/web/apache/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2
-        Download_Files ${Download_Mirror}/web/apache/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2
+        Download_Files ${Download_Mirror}/web/apache/${Apache_Ver}.tar.bz2 ${Apache_Ver}.tar.bz2 || return 1
+        Download_Files ${Download_Mirror}/web/apache/${APR_Ver}.tar.bz2 ${APR_Ver}.tar.bz2 || return 1
+        Download_Files ${Download_Mirror}/web/apache/${APR_Util_Ver}.tar.bz2 ${APR_Util_Ver}.tar.bz2 || return 1
     fi
+}
+
+LNMP_Get_Build_Jobs()
+{
+    local Jobs Available_KB Memory_Jobs Limit Usage Cgroup
+    if [ -n "${LNMP_BUILD_JOBS:-}" ]; then
+        if [[ ! "$LNMP_BUILD_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+            Echo_Red 'LNMP_BUILD_JOBS must be a positive integer.'
+            return 1
+        fi
+        printf '%s\n' "$LNMP_BUILD_JOBS"
+        return 0
+    fi
+    Jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null) || Jobs=1
+    [[ "$Jobs" =~ ^[1-9][0-9]*$ ]] || Jobs=1
+    [ "$Jobs" -le 4 ] || Jobs=4
+    Available_KB=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null) || Available_KB=''
+    # Respect both cgroup v2 and v1 remaining memory, not the host's RAM size.
+    for Cgroup in /sys/fs/cgroup /sys/fs/cgroup/memory; do
+        Limit='' Usage=''
+        if [[ -r "$Cgroup/memory.max" && -r "$Cgroup/memory.current" ]]; then
+            read -r Limit < "$Cgroup/memory.max"
+            read -r Usage < "$Cgroup/memory.current"
+        elif [[ -r "$Cgroup/memory.limit_in_bytes" && -r "$Cgroup/memory.usage_in_bytes" ]]; then
+            read -r Limit < "$Cgroup/memory.limit_in_bytes"
+            read -r Usage < "$Cgroup/memory.usage_in_bytes"
+        fi
+        if [[ "$Limit" =~ ^[0-9]+$ && "$Usage" =~ ^[0-9]+$ ]]; then
+            Limit=$(awk -v limit="$Limit" -v usage="$Usage" 'BEGIN {n=int((limit-usage)/1024); printf "%.0f\n", (n > 0 ? n : 0)}')
+            if [[ ! "$Available_KB" =~ ^[0-9]+$ ]] || [ "$Limit" -lt "$Available_KB" ]; then
+                Available_KB=$Limit
+            fi
+        fi
+    done
+    if [[ "$Available_KB" =~ ^[0-9]+$ ]]; then
+        Memory_Jobs=$((Available_KB / 1048576))
+        [ "$Memory_Jobs" -ge 1 ] || Memory_Jobs=1
+        [ "$Jobs" -le "$Memory_Jobs" ] || Jobs=$Memory_Jobs
+    fi
+    printf '%s\n' "$Jobs"
 }
 
 Make_Install()
 {
-    make -j `grep 'processor' /proc/cpuinfo | wc -l`
-    if [ $? -ne 0 ]; then
-        make
+    local Build_Jobs
+    Build_Jobs=$(LNMP_Get_Build_Jobs) || exit 1
+    if ! make -j "$Build_Jobs"; then
+        make -j1 || exit 1
     fi
-    make install
+    make -j1 install || exit 1
 }
 
 PHP_Make_Install()
 {
-    make ZEND_EXTRA_LIBS='-liconv' -j `grep 'processor' /proc/cpuinfo | wc -l`
-    if [ $? -ne 0 ]; then
-        make ZEND_EXTRA_LIBS='-liconv'
+    local Build_Jobs
+    Build_Jobs=$(LNMP_Get_Build_Jobs) || exit 1
+    if ! make ZEND_EXTRA_LIBS='-liconv' -j "$Build_Jobs"; then
+        make ZEND_EXTRA_LIBS='-liconv' -j1 || exit 1
     fi
-    make install
+    make -j1 install || exit 1
 }
 
 Install_Autoconf()
@@ -551,9 +709,9 @@ Install_Autoconf()
 Install_Libiconv()
 {
     Echo_Blue "[+] Installing ${Libiconv_Ver}"
-    Tar_Cd ${Libiconv_Ver}.tar.gz ${Libiconv_Ver}
-    ./configure --enable-static
-    Make_Install
+    Tar_Cd "${Libiconv_Ver}.tar.gz" "$Libiconv_Ver" || exit 1
+    ./configure --enable-static || exit 1
+    Make_Install || exit 1
     cd ${cur_dir}/src/
     rm -rf ${cur_dir}/src/${Libiconv_Ver}
 }
@@ -605,18 +763,18 @@ Install_Mhash()
 
 Install_Freetype()
 {
-    if echo "${Ubuntu_Version}" | grep -Eqi "^1[89]\.|2[0-9]\." || echo "${Mint_Version}" | grep -Eqi "^19|2[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^15\.[7-9]|15.1[0-9]|1[6-9]|2[0-9]" || echo "${Debian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Kali_Version}" | grep -Eqi "^202[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${CentOS_Version}" | grep -Eqi "^8|9" || echo "${RHEL_Version}" | grep -Eqi "^8|9" || echo "${Oracle_Version}" | grep -Eqi "^8|9" || echo "${Fedora_Version}" | grep -Eqi "^3[0-9]|29" || echo "${Rocky_Version}" | grep -Eqi "^8|9" || echo "${Alma_Version}" | grep -Eqi "^8|9" || echo "${openEuler_Version}" | grep -Eqi "^2[0-9]" || echo "${Anolis_Version}" | grep -Eqi "^8|9" || echo "${Kylin_Version}" | grep -Eqi "^V1[0-9]" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^8|9|23" || echo "${HCE_Version}" | grep -Eqi "^2\.[0-9]"; then
-        Download_Files ${Download_Mirror}/lib/freetype/${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}.tar.xz
+    if PHP_Uses_System_Dependencies || echo "${Ubuntu_Version}" | grep -Eqi "^1[89]\.|2[0-9]\." || echo "${Mint_Version}" | grep -Eqi "^19|2[0-9]" || echo "${Deepin_Version}" | grep -Eqi "^15\.[7-9]|15.1[0-9]|1[6-9]|2[0-9]" || echo "${Debian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Raspbian_Version}" | grep -Eqi "^9|1[0-9]" || echo "${Kali_Version}" | grep -Eqi "^202[0-9]" || echo "${UOS_Version}" | grep -Eqi "^2[0-9]" || echo "${CentOS_Version}" | grep -Eqi "^(8|9|10)" || echo "${RHEL_Version}" | grep -Eqi "^(8|9|10)" || echo "${Oracle_Version}" | grep -Eqi "^(8|9|10)" || echo "${Fedora_Version}" | grep -Eqi "^3[0-9]|29" || echo "${Rocky_Version}" | grep -Eqi "^(8|9|10)" || echo "${Alma_Version}" | grep -Eqi "^(8|9|10)" || echo "${openEuler_Version}" | grep -Eqi "^2[0-9]" || echo "${Anolis_Version}" | grep -Eqi "^(8|9|10)" || echo "${Kylin_Version}" | grep -Eqi "^V1[0-9]" || echo "${Amazon_Version}" | grep -Eqi "^202[3-9]" || echo "${OpenCloudOS_Version}" | grep -Eqi "^(8|9|10|23)" || echo "${HCE_Version}" | grep -Eqi "^2\.[0-9]"; then
+        Download_Files "${Download_Mirror}/lib/freetype/${Freetype_New_Ver}.tar.xz" "${Freetype_New_Ver}.tar.xz" || exit 1
         Echo_Blue "[+] Installing ${Freetype_New_Ver}"
-        Tar_Cd ${Freetype_New_Ver}.tar.xz ${Freetype_New_Ver}
-        ./configure --prefix=/usr/local/freetype --enable-freetype-config
+        Tar_Cd "${Freetype_New_Ver}.tar.xz" "$Freetype_New_Ver" || exit 1
+        ./configure --prefix=/usr/local/freetype --enable-freetype-config || exit 1
     else
-        Download_Files ${Download_Mirror}/lib/freetype/${Freetype_Ver}.tar.bz2 ${Freetype_Ver}.tar.bz2
+        Download_Files "${Download_Mirror}/lib/freetype/${Freetype_Ver}.tar.bz2" "${Freetype_Ver}.tar.bz2" || exit 1
         Echo_Blue "[+] Installing ${Freetype_Ver}"
-        Tar_Cd ${Freetype_Ver}.tar.bz2 ${Freetype_Ver}
-        ./configure --prefix=/usr/local/freetype
+        Tar_Cd "${Freetype_Ver}.tar.bz2" "$Freetype_Ver" || exit 1
+        ./configure --prefix=/usr/local/freetype || exit 1
     fi
-    Make_Install
+    Make_Install || exit 1
 
     [[ -d /usr/lib/pkgconfig ]] && \cp /usr/local/freetype/lib/pkgconfig/freetype2.pc /usr/lib/pkgconfig/
     cat > /etc/ld.so.conf.d/freetype.conf<<EOF
@@ -630,6 +788,10 @@ EOF
 
 Install_Curl()
 {
+    if PHP_Uses_System_Dependencies; then
+        Prepare_PHP_System_Dependencies || exit 1
+        return 0
+    fi
     if [[ ! -s /usr/local/curl/bin/curl || ! -s /usr/local/curl/lib/libcurl.so || ! -s /usr/local/curl/include/curl/curl.h ]]; then
         Echo_Blue "[+] Installing ${Curl_Ver}"
         cd ${cur_dir}/src
@@ -650,13 +812,37 @@ Install_Curl()
 
 Install_Pcre()
 {
-    if ! command -v pcre-config >/dev/null 2>&1 || pcre-config --version | grep -vEqi '^8.'; then
-        Echo_Blue "[+] Installing ${Pcre_Ver}"
-        cd ${cur_dir}/src
-        Download_Files ${Download_Mirror}/web/pcre/${Pcre_Ver}.tar.bz2 ${Pcre_Ver}.tar.bz2
-        Tar_Cd ${Pcre_Ver}.tar.bz2
-        Nginx_With_Pcre="--with-pcre=${cur_dir}/src/${Pcre_Ver} --with-pcre-jit"
+    local Target_Nginx=${Nginx_Version:-${Nginx_Ver#nginx-}} Regex_Source Option
+    Nginx_With_Pcre=''
+    if [[ ! "$Target_Nginx" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        Echo_Red "Cannot select PCRE for invalid Nginx version: ${Target_Nginx}."
+        return 1
     fi
+    if [ "$("${cur_dir}/include/version_compare" 1.21.5 "$Target_Nginx")" = '1' ]; then
+        Regex_Source=${Pcre_Legacy_Ver:-pcre-8.45}
+        [[ "$Regex_Source" =~ ^pcre-8\.[0-9]+$ ]] || return 1
+        Echo_Red "Legacy Nginx ${Target_Nginx}: isolated PCRE1 ${Regex_Source}; PCRE2 requires Nginx >= 1.21.5."
+    else
+        Regex_Source=$Pcre_Ver
+        if [[ ! "$Regex_Source" =~ ^pcre2-10\.[0-9]+$ ]]; then
+            Echo_Red "Nginx >= 1.21.5 requires Pcre_Ver=pcre2-10.xx (archive: .tar.bz2)."
+            return 1
+        fi
+        for Option in ${Nginx_Modules_Options}; do
+            case "$Option" in
+                --without-pcre|--without-pcre2|--with-pcre=*)
+                    Echo_Red "Conflicting PCRE option: ${Option}; LNMP selects the pinned PCRE2 source."
+                    return 1
+                    ;;
+            esac
+        done
+    fi
+    Echo_Blue "[+] Preparing ${Regex_Source} for Nginx ${Target_Nginx}"
+    cd "${cur_dir}/src" || return 1
+    Download_Files "${Download_Mirror}/web/pcre/${Regex_Source}.tar.bz2" "${Regex_Source}.tar.bz2" || return 1
+    Tar_Cd "${Regex_Source}.tar.bz2" "$Regex_Source" || return 1
+    Nginx_With_Pcre="--with-pcre=${cur_dir}/src/${Regex_Source} --with-pcre-jit"
+    cd "${cur_dir}/src" || return 1
 }
 
 Install_Jemalloc()
@@ -697,6 +883,10 @@ Install_TCMalloc()
 
 Install_Icu4c()
 {
+    if PHP_Uses_System_Dependencies; then
+        Prepare_PHP_System_Dependencies || exit 1
+        return 0
+    fi
     if command -v icu-config >/dev/null 2>&1 && icu-config --version | grep -Eq "^3."; then
         Echo_Blue "[+] Installing ${Libicu4c_Ver}"
         cd ${cur_dir}/src
@@ -714,6 +904,10 @@ Install_Icu4c()
 
 Install_Icu60()
 {
+    if PHP_Uses_System_Dependencies; then
+        Prepare_PHP_System_Dependencies || exit 1
+        return 0
+    fi
     if [ ! -s /usr/local/icu/bin/icu-config ]; then
         Echo_Blue "[+] Installing icu4c-60_3..."
         cd ${cur_dir}/src
@@ -757,6 +951,10 @@ Download_Boost()
 
 Install_Boost()
 {
+    if [ -d extra/boost ]; then
+        MySQL_WITH_BOOST=''
+        return 0
+    fi
     Echo_Blue "[+] Download or use exist boost..."
     if [ "${DBSelect}" = "4" ] || [ "${DBSelect}" = "5" ]; then
         if [ -d "${cur_dir}/src/${Mysql_Ver}/boost" ]; then
@@ -791,45 +989,142 @@ Install_Openssl()
 
 Install_Openssl_New()
 {
-    if openssl version | grep -vEqi "OpenSSL 1.1.1*"; then
-        if [ ! -s /usr/local/openssl1.1.1/bin/openssl ] || /usr/local/openssl1.1.1/bin/openssl version | grep -v 'OpenSSL 1.1.1'; then
+    apache_with_ssl=''
+    if openssl version | grep -Eqi "OpenSSL 3."; then
+        apache_with_ssl='--with-ssl'
+    else
+        if [ ! -s /usr/local/openssl3/bin/openssl ] || /usr/local/openssl3/bin/openssl version | grep -v 'OpenSSL 3'; then
             Echo_Blue "[+] Installing ${Openssl_New_Ver}"
-            cd ${cur_dir}/src
-            Download_Files ${Download_Mirror}/lib/openssl/${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}.tar.gz
-            [[ -d "${Openssl_New_Ver}" ]] && rm -rf ${Openssl_New_Ver}
-            Tar_Cd ${Openssl_New_Ver}.tar.gz ${Openssl_New_Ver}
-            ./config enable-weak-ssl-ciphers -fPIC --prefix=/usr/local/openssl1.1.1 --openssldir=/usr/local/openssl1.1.1
-            make depend
-            Make_Install
+            cd "${cur_dir}/src" || exit 1
+            if ! Download_Files "${Download_Mirror}/lib/openssl/${Openssl_New_Ver}.tar.gz" "${Openssl_New_Ver}.tar.gz"; then
+                Download_Files "https://www.openssl.org/source/${Openssl_New_Ver}.tar.gz" "${Openssl_New_Ver}.tar.gz" || exit 1
+            fi
+            Tar_Cd "${Openssl_New_Ver}.tar.gz" "$Openssl_New_Ver" || exit 1
+            ./config -fPIC --prefix=/usr/local/openssl3 --openssldir=/usr/local/openssl3 || exit 1
+            make depend || exit 1
+            Make_Install || exit 1
+            cd "${cur_dir}/src" || exit 1
+            rm -rf "${cur_dir}/src/${Openssl_New_Ver}"
+        fi
+        ldconfig || exit 1
+        apache_with_ssl='--with-ssl=/usr/local/openssl3'
+    fi
+}
+
+Install_Openssl_Compat()
+{
+    if [ ! -s /usr/local/openssl1.1.1/bin/openssl ] || /usr/local/openssl1.1.1/bin/openssl version | grep -v 'OpenSSL 1.1.1'; then
+        Echo_Blue "[+] Installing ${Openssl_Compat_Ver}"
+        cd ${cur_dir}/src
+        Download_Files ${Download_Mirror}/lib/openssl/${Openssl_Compat_Ver}.tar.gz ${Openssl_Compat_Ver}.tar.gz
+        if [ $? -ne 0 ]; then
+            Download_Files https://www.openssl.org/source/old/1.1.1/${Openssl_Compat_Ver}.tar.gz ${Openssl_Compat_Ver}.tar.gz
+            if [ $? -ne 0 ]; then
+                Echo_Red "Error! Unable to download ${Openssl_Compat_Ver}."
+                exit 1
+            fi
+        fi
+        [[ -d "${Openssl_Compat_Ver}" ]] && rm -rf ${Openssl_Compat_Ver}
+        Tar_Cd ${Openssl_Compat_Ver}.tar.gz ${Openssl_Compat_Ver}
+        ./config -fPIC --prefix=/usr/local/openssl1.1.1 --openssldir=/usr/local/openssl1.1.1
+        make depend
+        Make_Install
+        if [ -s /usr/local/openssl1.1.1/lib/libcrypto.so.1.1 ]; then
             ln -sf /usr/local/openssl1.1.1/lib/libcrypto.so.1.1 /usr/lib/
             ln -sf /usr/local/openssl1.1.1/lib/libssl.so.1.1 /usr/lib/
-            cd ${cur_dir}/src/
-            rm -rf ${cur_dir}/src/${Openssl_New_Ver}
+        elif [ -s /usr/local/openssl1.1.1/lib64/libcrypto.so.1.1 ]; then
+            ln -sf /usr/local/openssl1.1.1/lib64/libcrypto.so.1.1 /usr/lib/
+            ln -sf /usr/local/openssl1.1.1/lib64/libssl.so.1.1 /usr/lib/
         fi
-        ldconfig
-        apache_with_ssl='--with-ssl=/usr/local/openssl1.1.1'
-    else
-        apache_with_ssl='--with-ssl'
+        cd ${cur_dir}/src/
+        rm -rf ${cur_dir}/src/${Openssl_Compat_Ver}
     fi
+    ldconfig
 }
 
 Install_Nghttp2()
 {
     if [[ ! -s /usr/local/nghttp2/lib/libnghttp2.so || ! -s /usr/local/nghttp2/include/nghttp2/nghttp2.h ]]; then
         Echo_Blue "[+] Installing ${Nghttp2_Ver}"
-        cd ${cur_dir}/src
-        Download_Files ${Download_Mirror}/lib/nghttp2/${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}.tar.xz
-        [[ -d "${Nghttp2_Ver}" ]] && rm -rf ${Nghttp2_Ver}
-        Tar_Cd ${Nghttp2_Ver}.tar.xz ${Nghttp2_Ver}
-        ./configure --prefix=/usr/local/nghttp2
-        Make_Install
-        cd ${cur_dir}/src/
-        rm -rf ${cur_dir}/src/${Nghttp2_Ver}
+        cd "${cur_dir}/src" || exit 1
+        Download_Files "${Download_Mirror}/lib/nghttp2/${Nghttp2_Ver}.tar.bz2" "${Nghttp2_Ver}.tar.bz2" || exit 1
+        Tar_Cd "${Nghttp2_Ver}.tar.bz2" "$Nghttp2_Ver" || exit 1
+        ./configure --prefix=/usr/local/nghttp2 --enable-lib-only || exit 1
+        Make_Install || exit 1
+        cd "${cur_dir}/src" || exit 1
+        rm -rf "${cur_dir}/src/${Nghttp2_Ver}"
     fi
+}
+
+PHP_Uses_System_Dependencies()
+{
+    # Prefer the explicit target version over a possibly stale menu selection.
+    local Target_PHP=${php_version:-${Php_Ver#php-}}
+    if [ -n "$Target_PHP" ]; then
+        [[ "$Target_PHP" =~ ^8\.[2-5](\.|$) ]]
+    else
+        [[ "$PHPSelect" =~ ^1[3-6]$ ]]
+    fi
+}
+
+Prepare_PHP_System_Dependencies()
+{
+    local Pc_Dirs='' Directory Module Prefix Flags Libs Curl_Features Curl_Min=7.29.0
+    local Target_PHP=${php_version:-${Php_Ver#php-}}
+    PHP_Uses_System_Dependencies || return 0
+    command -v pkg-config >/dev/null 2>&1 || { Echo_Red 'pkg-config is required for PHP system dependencies.'; return 1; }
+    # Ignore /usr/local and user PKG_CONFIG_PATH only for these three libraries.
+    for Directory in $(pkg-config --variable=pc_path pkg-config | tr ':' ' '); do
+        case "$Directory" in
+            /usr/local/*) ;;
+            /usr/lib/*|/usr/lib64/pkgconfig|/usr/lib/pkgconfig|/usr/share/pkgconfig|/lib/*|/lib64/pkgconfig)
+                Pc_Dirs=${Pc_Dirs:+${Pc_Dirs}:}${Directory}
+                ;;
+        esac
+    done
+    [ -n "$Pc_Dirs" ] || { Echo_Red 'Cannot locate distribution pkg-config directories.'; return 1; }
+    [[ "$Target_PHP" =~ ^8\.5(\.|$) || ( -z "$Target_PHP" && "$PHPSelect" = '16' ) ]] && Curl_Min=7.61.0
+    if ! PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --exists "libcurl >= $Curl_Min" 'libzip >= 0.11' 'libzip != 1.3.1' 'libzip != 1.7.0' 'icu-uc >= 57.1' icu-io icu-i18n; then
+        Echo_Red "Install distribution libcurl (>= ${Curl_Min}), libzip and ICU development packages; legacy source fallback is disabled for PHP 8.2-8.5."
+        return 1
+    fi
+    for Module in libcurl libzip icu-uc icu-io icu-i18n; do
+        Prefix=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --variable=prefix "$Module") || return 1
+        if [[ "$Prefix" != /usr && "$Prefix" != / ]]; then
+            Echo_Red "Expected a distribution ${Module}, found prefix ${Prefix}."
+            return 1
+        fi
+    done
+    Flags=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --cflags libcurl) || return 1
+    Libs=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --libs libcurl) || return 1
+    export CURL_CFLAGS="$Flags" CURL_LIBS="$Libs"
+    Curl_Features=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --variable=supported_features libcurl) || return 1
+    # Older pkgconf can retain the .pc value's enclosing quotes.
+    case "$Curl_Features" in
+        \"*\") Curl_Features=${Curl_Features#\"}; Curl_Features=${Curl_Features%\"} ;;
+        \'*\') Curl_Features=${Curl_Features#\'}; Curl_Features=${Curl_Features%\'} ;;
+    esac
+    if [[ ! "$Curl_Features" =~ ^[A-Za-z0-9_.+[:blank:]-]*$ ]]; then
+        Echo_Red 'Unsupported characters in distribution cURL feature metadata.'
+        return 1
+    fi
+    export CURL_FEATURES="$Curl_Features"
+    Flags=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --cflags libzip) || return 1
+    Libs=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --libs libzip) || return 1
+    export LIBZIP_CFLAGS="$Flags" LIBZIP_LIBS="$Libs"
+    Flags=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --cflags icu-uc icu-io icu-i18n) || return 1
+    Libs=$(PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR="$Pc_Dirs" pkg-config --libs icu-uc icu-io icu-i18n) || return 1
+    export ICU_CFLAGS="$Flags" ICU_LIBS="$Libs"
+    with_curl='--with-curl'
+    with_icu_dir=''
 }
 
 Install_Libzip()
 {
+    if PHP_Uses_System_Dependencies; then
+        Prepare_PHP_System_Dependencies || exit 1
+        return 0
+    fi
     if echo "${CentOS_Version}" | grep -Eqi "^7"  || echo "${RHEL_Version}" | grep -Eqi "^7"  || echo "${Aliyun_Version}" | grep -Eqi "^2" || echo "${Alibaba_Version}" | grep -Eqi "^2" || echo "${Oracle_Version}" | grep -Eqi "^7" || echo "${Anolis_Version}" | grep -Eqi "^7"; then
         if [ ! -s /usr/local/lib/libzip.so ]; then
             Echo_Blue "[+] Installing ${Libzip_Ver}"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail
 export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 
 # Check if user is root
@@ -22,11 +23,17 @@ action=$1
 . lnmp.conf
 . include/main.sh
 . include/init.sh
+. include/version.sh
 
 Get_Dist_Name
 
 Install_Pureftpd()
 {
+    local Version_Output Runtime_Version Attempt
+    if [ -e /usr/local/pureftpd ] || [ -L /usr/local/pureftpd ]; then
+        Echo_Red "Existing Pure-FTPd installation found; preserve its configuration and virtual users before a manual upgrade."
+        return 1
+    fi
     Press_Install
 
     Echo_Blue "Installing dependent packages..."
@@ -45,14 +52,23 @@ Install_Pureftpd()
     if [ $? -eq 0 ]; then
         echo "Download ${Pureftpd_Ver}.tar.bz2 successfully!"
     else
-        Download_Files https://download.pureftpd.org/pub/pure-ftpd/releases/${Pureftpd_Ver}.tar.bz2 ${Pureftpd_Ver}.tar.bz2
+        Download_Files https://download.pureftpd.org/pub/pure-ftpd/releases/${Pureftpd_Ver}.tar.bz2 ${Pureftpd_Ver}.tar.bz2 || return 1
     fi
 
     Echo_Blue "Installing pure-ftpd..."
     Tar_Cd ${Pureftpd_Ver}.tar.bz2 ${Pureftpd_Ver}
-    ./configure --prefix=/usr/local/pureftpd CFLAGS=-O2 --with-puredb --with-quotas --with-cookie --with-virtualhosts --with-diraliases --with-sysquotas --with-ratios --with-altlog --with-paranoidmsg --with-shadow --with-welcomemsg --with-throttling --with-uploadscript --with-language=english --with-rfc2640 --with-ftpwho --with-tls
+    ./configure --prefix=/usr/local/pureftpd CFLAGS=-O2 --with-puredb --with-quotas --with-cookie --with-virtualhosts --with-diraliases --with-sysquotas --with-ratios --with-altlog --with-paranoidmsg --with-shadow --with-welcomemsg --with-throttling --with-uploadscript --with-language=english --with-rfc2640 --with-ftpwho --with-tls || return 1
 
     Make_Install
+
+    [ -x /usr/local/pureftpd/sbin/pure-ftpd ] || { Echo_Red 'Pure-FTPd executable is missing.'; return 1; }
+    Version_Output=$(/usr/local/pureftpd/sbin/pure-ftpd --help 2>&1) || {
+        Echo_Red 'Pure-FTPd runtime version check failed.'; return 1;
+    }
+    Runtime_Version=$(printf '%s\n' "$Version_Output" | awk 'NR == 1 && $1 == "pure-ftpd" && $2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ {sub(/^v/, "", $2); print $2}')
+    [ -n "$Runtime_Version" ] && [ "pure-ftpd-$Runtime_Version" = "$Pureftpd_Ver" ] || {
+        Echo_Red 'Pure-FTPd runtime version does not match the selected release.'; return 1;
+    }
 
     Echo_Blue "Copy configure files..."
     mkdir /usr/local/pureftpd/etc
@@ -66,12 +82,18 @@ Install_Pureftpd()
     touch /usr/local/pureftpd/etc/pureftpd.passwd
     touch /usr/local/pureftpd/etc/pureftpd.pdb
 
-    StartUp pureftpd
+    StartUp pureftpd || return 1
 
     cd ..
     rm -rf ${cur_dir}/src/${Pureftpd_Ver}
 
-    if command -v iptables >/dev/null 2>&1; then
+    if [ "${Enable_Firewall_Management:-n}" = y ] && {
+        command -v firewall-cmd >/dev/null 2>&1 || command -v firewalld >/dev/null 2>&1 ||
+        [ -e /etc/systemd/system/firewalld.service ] || [ -e /usr/lib/systemd/system/firewalld.service ] ||
+        [ -e /lib/systemd/system/firewalld.service ];
+    }; then
+        Echo_Yellow 'Existing firewalld detected. Configure FTP ports manually; LNMP will not change firewall rules or stop/disable firewalld.'
+    elif [ "${Enable_Firewall_Management:-n}" = y ] && command -v iptables >/dev/null 2>&1; then
         if [ -s /bin/lnmp ]; then
             iptables -I INPUT 7 -p tcp --dport 20 -j ACCEPT
             iptables -I INPUT 8 -p tcp --dport 21 -j ACCEPT
@@ -107,7 +129,12 @@ Install_Pureftpd()
 
     if [[ -s /usr/local/pureftpd/sbin/pure-ftpd && -s /usr/local/pureftpd/etc/pure-ftpd.conf && -s /etc/init.d/pureftpd ]]; then
         Echo_Blue "Starting pureftpd..."
-        /etc/init.d/pureftpd start
+        StartOrStop start pureftpd || { Echo_Red 'Pure-FTPd failed to start.'; return 1; }
+        for Attempt in 1 2 3 4 5; do
+            StartOrStop status pureftpd >/dev/null 2>&1 && break
+            [ "$Attempt" != 5 ] || { Echo_Red 'Pure-FTPd is not running after startup.'; return 1; }
+            sleep 1
+        done
         Echo_Green "+----------------------------------------------------------------------+"
         Echo_Green "| Install Pure-FTPd completed,enjoy it!"
         Echo_Green "| =>use command: lnmp ftp {add|list|del|show} to manage FTP users."
@@ -116,6 +143,7 @@ Install_Pureftpd()
         Echo_Green "+----------------------------------------------------------------------+"
     else
         Echo_Red "Pureftpd install failed!"
+        return 1
     fi
 }
 

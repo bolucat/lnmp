@@ -2,7 +2,13 @@
 
 Add_Iptables_Rules()
 {
-    #add iptables firewall rules
+    [ "${Enable_Firewall_Management:-n}" = y ] || return 0
+    if command -v firewall-cmd >/dev/null 2>&1 || command -v firewalld >/dev/null 2>&1 ||
+        [ -e /etc/systemd/system/firewalld.service ] || [ -e /usr/lib/systemd/system/firewalld.service ] ||
+        [ -e /lib/systemd/system/firewalld.service ]; then
+        Echo_Yellow 'Existing firewalld detected. Configure the required ports manually; LNMP will not change firewall rules or stop/disable firewalld.'
+        return 0
+    fi
     if command -v iptables >/dev/null 2>&1; then
         iptables -I INPUT 1 -i lo -j ACCEPT
         iptables -I INPUT 2 -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -15,10 +21,6 @@ Add_Iptables_Rules()
             yum -y install iptables-services
             service iptables save
             service iptables reload
-            if command -v firewalld >/dev/null 2>&1; then
-                systemctl stop firewalld
-                systemctl disable firewalld
-            fi
             StartUp iptables
         elif [ "$PM" = "apt" ]; then
             apt-get --no-install-recommends install -y iptables-persistent
@@ -38,64 +40,64 @@ Add_Iptables_Rules()
 Add_LNMP_Startup()
 {
     echo "Add Startup and Starting LNMP..."
-    \cp ${cur_dir}/conf/lnmp /bin/lnmp
-    chmod +x /bin/lnmp
-    StartUp nginx
-    StartOrStop start nginx
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
-        StartUp mariadb
-        StartOrStop start mariadb
-        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
-        StartUp mysql
-        StartOrStop start mysql
+    \cp "${cur_dir}/conf/lnmp" /bin/lnmp || return 1
+    chmod +x /bin/lnmp || return 1
+    StartUp nginx || return 1
+    StartOrStop start nginx || return 1
+    if [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
+        StartUp mariadb || return 1
+        StartOrStop start mariadb || return 1
+        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp || return 1
+    elif [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
+        StartUp mysql || return 1
+        StartOrStop start mysql || return 1
     elif [ "${DBSelect}" = "0" ]; then
-        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp
+        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp || return 1
     fi
-    StartUp php-fpm
-    StartOrStop start php-fpm
+    StartUp php-fpm || return 1
+    StartOrStop start php-fpm || return 1
     if [ "${PHPSelect}" = "1" ]; then
-        sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp
+        sed -i 's#/usr/local/php/var/run/php-fpm.pid#/usr/local/php/logs/php-fpm.pid#' /bin/lnmp || return 1
     fi
 }
 
 Add_LNMPA_Startup()
 {
     echo "Add Startup and Starting LNMPA..."
-    \cp ${cur_dir}/conf/lnmpa /bin/lnmp
-    chmod +x /bin/lnmp
-    StartUp nginx
-    StartOrStop start nginx
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
-        StartUp mariadb
-        StartOrStop start mariadb
-        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
-        StartUp mysql
-        StartOrStop start mysql
+    \cp "${cur_dir}/conf/lnmpa" /bin/lnmp || return 1
+    chmod +x /bin/lnmp || return 1
+    StartUp nginx || return 1
+    StartOrStop start nginx || return 1
+    if [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
+        StartUp mariadb || return 1
+        StartOrStop start mariadb || return 1
+        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp || return 1
+    elif [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
+        StartUp mysql || return 1
+        StartOrStop start mysql || return 1
     elif [ "${DBSelect}" = "0" ]; then
-        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp
+        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp || return 1
     fi
-    StartUp httpd
-    StartOrStop start httpd
+    StartUp httpd || return 1
+    StartOrStop start httpd || return 1
 }
 
 Add_LAMP_Startup()
 {
     echo "Add Startup and Starting LAMP..."
-    \cp ${cur_dir}/conf/lamp /bin/lnmp
-    chmod +x /bin/lnmp
-    StartUp httpd
-    StartOrStop start httpd
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
-        StartUp mariadb
-        StartOrStop start mariadb
-        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
-        StartUp mysql
-        StartOrStop start mysql
+    \cp "${cur_dir}/conf/lamp" /bin/lnmp || return 1
+    chmod +x /bin/lnmp || return 1
+    StartUp httpd || return 1
+    StartOrStop start httpd || return 1
+    if [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
+        StartUp mariadb || return 1
+        StartOrStop start mariadb || return 1
+        sed -i 's#/etc/init.d/mysql#/etc/init.d/mariadb#' /bin/lnmp || return 1
+    elif [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
+        StartUp mysql || return 1
+        StartOrStop start mysql || return 1
     elif [ "${DBSelect}" = "0" ]; then
-        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp
+        sed -i 's#/etc/init.d/mysql.*##' /bin/lnmp || return 1
     fi
 }
 
@@ -115,14 +117,14 @@ Check_Nginx_Files()
 Check_DB_Files()
 {
     isDB=""
-    if [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    if [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
         if [[ -s /usr/local/mariadb/bin/mysql && -s /usr/local/mariadb/bin/mysqld_safe && -s /etc/my.cnf ]]; then
             Echo_Green "MariaDB: OK"
             isDB="ok"
         else
             Echo_Red "Error: MariaDB install failed."
         fi
-    elif [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    elif [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
         if [[ -s /usr/local/mysql/bin/mysql && -s /usr/local/mysql/bin/mysqld_safe && -s /etc/my.cnf ]]; then
             Echo_Green "MySQL: OK"
             isDB="ok"
@@ -159,14 +161,14 @@ Check_PHP_Files()
 Check_Apache_Files()
 {
     isApache=""
-    if [[ "${PHPSelect}" =~ ^[6789]|10$ ]]; then
+    if [[ "${PHPSelect}" =~ ^([6-9]|10)$ ]]; then
         if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/libphp7.so && -s /usr/local/apache/conf/httpd.conf ]]; then
             Echo_Green "Apache: OK"
             isApache="ok"
         else
             Echo_Red "Error: Apache install failed."
         fi
-    elif [[ "${PHPSelect}" =~ ^1[1-3]$ ]]; then
+    elif [[ "${PHPSelect}" =~ ^1[1-6]$ ]]; then
         if [[ -s /usr/local/apache/bin/httpd && -s /usr/local/apache/modules/libphp.so && -s /usr/local/apache/conf/httpd.conf ]]; then
             Echo_Green "Apache: OK"
             isApache="ok"
@@ -186,9 +188,9 @@ Check_Apache_Files()
 Clean_DB_Src_Dir()
 {
     echo "Clean database src directory..."
-    if [[ "${DBSelect}" =~ ^[12345]|11$ ]]; then
+    if [[ "${DBSelect}" =~ ^(1|2|3|4|5|11)$ ]]; then
         rm -rf ${cur_dir}/src/${Mysql_Ver}
-    elif [[ "${DBSelect}" =~ ^[6789]|10$ ]]; then
+    elif [[ "${DBSelect}" =~ ^(6|7|8|9|10|12|13)$ ]]; then
         rm -rf ${cur_dir}/src/${Mariadb_Ver}
     fi
     if [[ "${DBSelect}" = "4" ]]; then
@@ -208,14 +210,15 @@ Clean_Web_Src_Dir()
 {
     echo "Clean Web Server src directory..."
     if [ "${Stack}" = "lnmp" ]; then
-        rm -rf ${cur_dir}/src/${Nginx_Ver}
+        rm -rf ${cur_dir}/src/${Nginx_Ver}*
     elif [ "${Stack}" = "lnmpa" ]; then
-        rm -rf ${cur_dir}/src/${Nginx_Ver}
+        rm -rf ${cur_dir}/src/${Nginx_Ver}*
         rm -rf ${cur_dir}/src/${Apache_Ver}
     elif [ "${Stack}" = "lamp" ]; then
         rm -rf ${cur_dir}/src/${Apache_Ver}
     fi
     [[ -d "${cur_dir}/src/${Openssl_Ver}" ]] && rm -rf ${cur_dir}/src/${Openssl_Ver}
+    [[ -d "${cur_dir}/src/${Openssl_Compat_Ver}" ]] && rm -rf ${cur_dir}/src/${Openssl_Compat_Ver}
     [[ -d "${cur_dir}/src/${Openssl_New_Ver}" ]] && rm -rf ${cur_dir}/src/${Openssl_New_Ver}
     [[ -d "${cur_dir}/src/${Pcre_Ver}" ]] && rm -rf ${cur_dir}/src/${Pcre_Ver}
     [[ -d "${cur_dir}/src/${LuaNginxModule}" ]] && rm -rf ${cur_dir}/src/${LuaNginxModule}
@@ -254,6 +257,7 @@ Print_Sucess_Info()
     stop_time=$(date +%s)
     echo "Install lnmp takes $(((stop_time-start_time)/60)) minutes."
     Echo_Green "Install lnmp V${LNMP_Ver} completed! enjoy it."
+    LNMP_Stats_Success=y
 }
 
 Print_Failed_Info()
@@ -275,6 +279,7 @@ Check_LNMP_Install()
         Print_Sucess_Info
     else
         Print_Failed_Info
+        return 1
     fi
 }
 
@@ -288,6 +293,7 @@ Check_LNMPA_Install()
         Print_Sucess_Info
     else
         Print_Failed_Info
+        return 1
     fi
 }
 
@@ -300,5 +306,6 @@ Check_LAMP_Install()
         Print_Sucess_Info
     else
         Print_Failed_Info
+        return 1
     fi
 }
